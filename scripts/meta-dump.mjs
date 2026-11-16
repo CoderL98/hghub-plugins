@@ -4,7 +4,7 @@
 //   node scripts/meta-dump.mjs <plugin-file>
 //
 // Envelope shapes (exit code is always 0; failures live inside the envelope):
-//   success: {ok: true, meta, moduleExports, capabilities}
+//   success: {ok: true, meta, moduleExports, capabilities, declaredNamespaces}
 //   failure: {ok: false, stage: "import" | "factory", message}
 //
 // Invalid export structure (meta not an object, default not a function) is
@@ -136,6 +136,10 @@ async function main() {
     meta: mod.meta,
     moduleExports: describeModuleExports(mod),
     capabilities: collectCapabilities(returned),
+    // spec §12: one-level key names of the factory result, regardless of
+    // value type — a declared namespace with a non-object/empty value
+    // collects no capabilities, so the declaration itself must survive.
+    declaredNamespaces: returned !== null && typeof returned === 'object' ? Object.keys(returned) : [],
   };
 }
 

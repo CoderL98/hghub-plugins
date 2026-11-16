@@ -20,7 +20,7 @@ import { spawn } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkLists, checkPlugin, parseEnvelope } from './rules.mjs';
+import { checkLists, checkPlugin, parseEnvelope, LIST_FILES, fileStem } from './rules.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..');
@@ -30,19 +30,6 @@ const DEFAULT_TIMEOUT_MS = 5000;
 const MAX_PLUGIN_BYTES = 2 * 1024 * 1024; // file-01 host cap (spec §5)
 const CHUNK_SIZE = 4; // pinned concurrency: chunked Promise.all, no worker pool
 const STDERR_EXCERPT_CP = 200; // stderr excerpt cap in code points
-
-// Keys mirror the checkLists `lists` argument (rules.mjs LIST_FILES).
-const LIST_FILES = [
-  ['manifest', 'manifest.json'],
-  ['all', 'subs/all.json'],
-  ['vod', 'subs/vod.json'],
-  ['nsfw18', 'subs/18.json'],
-];
-
-function fileStem(fileName) {
-  const dot = fileName.lastIndexOf('.');
-  return dot > 0 ? fileName.slice(0, dot) : fileName;
-}
 
 // Finding shape aligned with rules.mjs: message carries the "rule " prefix.
 function finding(rule, severity, pluginId, message) {
@@ -72,7 +59,10 @@ function spawnDump(absPath, timeout) {
     let settled = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill();
+      // SIGKILL, not the default SIGTERM: a plugin may register a no-op
+      // SIGTERM handler and survive (POSIX), hanging the CLI. On Windows
+      // kill() is TerminateProcess regardless of the signal.
+      child.kill('SIGKILL');
     }, timeout);
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
@@ -107,7 +97,20 @@ function pluginFindings(fileName, size, raw, envelope, ctx, timeout) {
     return [envelope]; // stdout polluted — parseEnvelope already built it
   }
   if (envelope.ok === true) {
-    return checkPlugin({ ...envelope, fileName, fileSize: size }, ctx);
+    const findings = checkPlugin({ ...envelope, fileName, fileSize: size }, ctx);
+    // meta-08 (spec §12 errata): the host requires exactly {meta, default}.
+    // The worker's "exports:" failure envelope only covers missing meta /
+    // missing-or-non-function default — extra exports reach this ok:true
+    // path, so judge moduleExports here.
+    const mod = envelope.moduleExports;
+    const exportKeys = mod !== null && typeof mod === 'object' && !Array.isArray(mod)
+      ? Object.keys(mod).sort()
+      : [];
+    if (exportKeys.join(',') !== 'default,meta') {
+      findings.unshift(finding('meta-08', 'fail', stem,
+        `导出结构不合法：模块导出键为 [${exportKeys.join(', ')}]，宿主要求恰好 {meta, default}`));
+    }
+    return findings;
   }
   // ok:false envelope — classify by stage (brief: exports: → meta-08).
   const stage = envelope.stage;
@@ -180,7 +183,17 @@ export async function runValidate({ root = repoRoot, plugin, timeout = DEFAULT_T
   const toSpawn = [];
   for (const fileName of targets) {
     const absPath = path.join(pluginsDir, fileName);
-    const size = statSync(absPath).size;
+    let size;
+    try {
+      size = statSync(absPath).size;
+    } catch (err) {
+      // TOCTOU: the file vanished between readdir and stat — a dump-01, not
+      // a crash.
+      results.set(fileName, {
+        preFindings: [finding('dump-01', 'fail', fileStem(fileName), `文件无法读取：${err.message}`)],
+      });
+      continue;
+    }
     if (size > MAX_PLUGIN_BYTES) {
       results.set(fileName, {
         preFindings: [finding('file-01', 'fail', fileStem(fileName),
@@ -252,33 +265,43 @@ export async function runValidate({ root = repoRoot, plugin, timeout = DEFAULT_T
   listFindings.push(...parseFailures);
 
   // Report: one PASS line per clean plugin, one FAIL/WARN line per finding,
-  // list findings after plugin lines, summary line last. Plain text — ANSI
+  // list findings after plugin lines, summary line last. The summary counts
+  // PLUGINS (a plugin with several findings is one failing plugin, not
+  // several), list problems are tallied separately. Plain text — ANSI
   // colouring is the CLI shell's business (no TTY here).
   const statusOf = { fail: 'FAIL', warn: 'WARN' };
   const desc = (f) => (f.message.startsWith(f.rule + ' ') ? f.message.slice(f.rule.length + 1) : f.message);
   const lineOf = (f) => `${statusOf[f.severity] || 'FAIL'} ${f.pluginId} — [${f.rule}] ${desc(f)}`;
 
-  let passCount = 0;
-  let failCount = 0;
-  let warnCount = 0;
+  let passPlugins = 0;
+  let failPlugins = 0;
+  let warnOnlyPlugins = 0;
   for (const fileName of targets) {
     const findings = findingsByFile.get(fileName) || [];
     if (findings.length === 0) {
       lines.push(`PASS ${fileStem(fileName)}`);
-      passCount += 1;
+      passPlugins += 1;
       continue;
     }
+    const hasFail = findings.some((f) => f.severity !== 'warn');
+    if (hasFail) failPlugins += 1;
+    else if (findings.some((f) => f.severity === 'warn')) warnOnlyPlugins += 1;
     for (const f of findings) {
-      if (f.severity === 'warn') warnCount += 1; else failCount += 1;
       lines.push(lineOf(f));
     }
   }
+  let listFailCount = 0;
+  let listWarnCount = 0;
   for (const f of listFindings) {
-    if (f.severity === 'warn') warnCount += 1; else failCount += 1;
+    if (f.severity === 'warn') listWarnCount += 1; else listFailCount += 1;
     lines.push(lineOf(f));
   }
-  lines.push(`校验完成：${targets.length} 个插件：${passCount} 通过，${failCount} 失败，${warnCount} 警告`);
-  return { exitCode: failCount > 0 ? 1 : 0, lines };
+  let summary = `校验完成：${targets.length} 个插件：${passPlugins} 全通过，${failPlugins} 失败，${warnOnlyPlugins} 仅警告`;
+  if (listFailCount + listWarnCount > 0) {
+    summary += `；清单问题 ${listFailCount + listWarnCount} 项`;
+  }
+  lines.push(summary);
+  return { exitCode: failPlugins > 0 || listFailCount > 0 ? 1 : 0, lines };
 }
 
 // ---------------------------------------------------------------------------

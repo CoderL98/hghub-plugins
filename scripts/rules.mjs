@@ -1,16 +1,17 @@
 // Plugin contract rules engine — pure functions, no IO.
 //
 // checkPlugin consumes a success envelope from scripts/meta-dump.mjs
-// ({ok: true, meta, moduleExports, capabilities}) merged by the caller with
-// {fileName, fileSize}. Envelope failures (import/factory error, timeout,
+// ({ok: true, meta, moduleExports, capabilities, declaredNamespaces}) merged
+// by the caller with {fileName, fileSize}. Envelope failures (import/factory
+// error, timeout,
 // polluted output) and the pre-spawn size check (file-01) are short-circuited
 // by the CLI before this engine runs, so meta-08 / file-01 / dump-01 are not
 // rules here; parseEnvelope produces the dump-01 finding for polluted stdout.
 //
-// Host-behaviour citations (transcribed/verified 2026-11-17):
-//   prelude.js — F:/project/HGhub/src-tauri/crates/hpp/src/prelude.js
-//   model.rs   — F:/project/HGhub/src-tauri/crates/hpp/src/model.rs
-//   manager.rs — F:/project/HGhub/src-tauri/crates/hpp/src/manager.rs
+// Host-behaviour citations, HGhub upstream repo (verified 2026-11-17):
+//   prelude.js — src-tauri/crates/hpp/src/prelude.js
+//   model.rs   — src-tauri/crates/hpp/src/model.rs
+//   manager.rs — src-tauri/crates/hpp/src/manager.rs
 //
 // Layering convention to keep one violation in one rule: meta-01 owns the
 // *shape* of declared fields (container types and item types); value-level
@@ -89,7 +90,8 @@ const cpLen = (s) => [...s].length;
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const joinProblems = (parts) => (parts.length ? parts.join('; ') : undefined);
 
-function fileStem(fileName) {
+// Shared with validate.mjs (single source of truth for stem/id semantics).
+export function fileStem(fileName) {
   const name = typeof fileName === 'string' ? fileName : '';
   const dot = name.lastIndexOf('.');
   return dot > 0 ? name.slice(0, dot) : name;
@@ -355,13 +357,21 @@ function cap02(dump) {
   return 'source 必须实现 media.* 或 live.resolve 之一';
 }
 
-// cap-03 [host prelude.js:168-171] — a namespace with any function method must
-// expose its full required-method set.
+// cap-03 [host prelude.js:168-171] — a namespace declared on the factory
+// result (spec §12 declaredNamespaces: one-level keys, any value type) whose
+// name is in the required-method table must expose the full set as
+// capabilities. A non-object or empty-object value yields no capabilities
+// and fails here. Dumps without declaredNamespaces (hand-built) fall back to
+// inferring the namespaces from capability keys — the pre-§12 behaviour.
 function cap03(dump) {
   const caps = capabilitiesOf(dump);
+  const declared = Array.isArray(dump.declaredNamespaces)
+    ? dump.declaredNamespaces.filter((ns) => typeof ns === 'string')
+    : [...new Set(Object.keys(caps).filter((k) => caps[k] === true).map((k) => k.split('.')[0]))];
   const p = [];
-  for (const [ns, methods] of Object.entries(REQUIRED_METHODS)) {
-    if (methods.length === 0 || !hasNamespace(caps, ns)) continue;
+  for (const ns of declared) {
+    const methods = REQUIRED_METHODS[ns];
+    if (!methods || methods.length === 0) continue;
     const missing = methods.filter((m) => !hasCap(caps, ns + '.' + m));
     if (missing.length) p.push(`${ns} 缺少必需方法 ${missing.join('/')}`);
   }
@@ -477,8 +487,9 @@ export function parseEnvelope(stdoutText, pluginId) {
 // ---------------------------------------------------------------------------
 
 // list-03 applies to every list independently; the label names the offending
-// list in messages. Keys mirror the checkLists `lists` argument.
-const LIST_FILES = [
+// list in messages. Keys mirror the checkLists `lists` argument. Exported for
+// validate.mjs (single source of truth for list file paths).
+export const LIST_FILES = [
   ['manifest', 'manifest.json'],
   ['all', 'subs/all.json'],
   ['vod', 'subs/vod.json'],

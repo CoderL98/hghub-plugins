@@ -64,6 +64,29 @@ test('meta-dump: bad-logs keeps stdout to exactly one valid JSON line', () => {
   assert.match(res.stderr, /factory noise/);
 });
 
+test('meta-dump: envelope carries declaredNamespaces for every one-level key', () => {
+  const res = runDump('ok-async.js');
+  assert.equal(res.error, undefined);
+  const envelope = parseSingleLine(res.stdout);
+  // spec §12: one-level key names of the factory result, insertion order,
+  // regardless of whether the value is an object.
+  assert.deepEqual(envelope.declaredNamespaces, ['endpoints', 'media', 'extras']);
+});
+
+test('meta-dump: a non-object namespace value is declared but collects no capability', () => {
+  const res = runDump('bad-ns-value.js');
+  assert.equal(res.error, undefined);
+  const envelope = parseSingleLine(res.stdout);
+  assert.equal(envelope.ok, true);
+  assert.deepEqual(envelope.declaredNamespaces, ['media', 'search']);
+  assert.equal(envelope.capabilities['media.getDetail'], true);
+  assert.equal(envelope.capabilities['media.resolvePlayback'], true);
+  assert.ok(
+    !Object.keys(envelope.capabilities).some((k) => k.startsWith('search.')),
+    JSON.stringify(envelope.capabilities),
+  );
+});
+
 // ---------------------------------------------------------------------------
 // rules.mjs: checkPlugin + parseEnvelope (contract rules engine)
 //
@@ -84,11 +107,6 @@ before(() => {
   baseEnvelope = parseSingleLine(res.stdout);
   assert.equal(baseEnvelope.ok, true);
 });
-
-function fileStem(fileName) {
-  const dot = fileName.lastIndexOf('.');
-  return dot > 0 ? fileName.slice(0, dot) : fileName;
-}
 
 function makeDump({ meta: metaOverrides, capabilities, fileName = 'ok-async.js', fileSize = 2048 } = {}) {
   const dump = { ...structuredClone(baseEnvelope), fileName, fileSize };
@@ -343,6 +361,46 @@ test('rules: cap-03 flags declared namespaces with missing required methods', ()
   assertFinding(findingsOf(authPartial), 'cap-03', 'fail');
 
   assertNoFinding(findingsOf(makeDump()), 'cap-03');
+});
+
+test('rules: cap-03 flags a declared namespace whose value is not a method object', () => {
+  // spec §12: declaredNamespaces carries the declaration even when the value
+  // is a string, so the required-method check still has something to judge.
+  const dump = {
+    ok: true,
+    meta: { id: 'x', name: 'X', version: '1.0.0', protocol: 1, description: 'd', author: 't' },
+    capabilities: { 'media.getDetail': true, 'media.resolvePlayback': true },
+    declaredNamespaces: ['media', 'search'],
+    fileName: 'x.js',
+    fileSize: 2048,
+  };
+  const finding = assertFinding(checkPlugin(dump, { idCounts: new Map([['x', 1]]) }), 'cap-03', 'fail', 'x');
+  assert.match(finding.message, /search/);
+});
+
+test('rules: cap-03 flags a declared-but-empty namespace (no capabilities at all)', () => {
+  const dump = {
+    ok: true,
+    meta: { id: 'x', name: 'X', version: '1.0.0', protocol: 1, description: 'd', author: 't' },
+    capabilities: { 'media.getDetail': true, 'media.resolvePlayback': true },
+    declaredNamespaces: ['media', 'auth'],
+    fileName: 'x.js',
+    fileSize: 2048,
+  };
+  const finding = assertFinding(checkPlugin(dump, { idCounts: new Map([['x', 1]]) }), 'cap-03', 'fail', 'x');
+  assert.match(finding.message, /auth/);
+});
+
+test('rules: cap-03 ignores out-of-table namespaces and passes complete ones', () => {
+  const dump = {
+    ok: true,
+    meta: { id: 'x', name: 'X', version: '1.0.0', protocol: 1, description: 'd', author: 't' },
+    capabilities: { 'media.getDetail': true, 'media.resolvePlayback': true, 'extras.ping': true },
+    declaredNamespaces: ['media', 'extras'],
+    fileName: 'x.js',
+    fileSize: 2048,
+  };
+  assertNoFinding(checkPlugin(dump, { idCounts: new Map([['x', 1]]) }), 'cap-03');
 });
 
 test('rules: cap-04 requires media.getDetail alongside entry-point capabilities', () => {
@@ -733,6 +791,8 @@ test('validate CLI: bad-meta yields at least two distinct meta-* FAILs and no du
     const rules = new Set([...res.stdout.matchAll(/\[(meta-[^\]]+)\]/g)].map((m) => m[1]));
     assert.ok(rules.size >= 2, res.stdout);
     assert.ok(!res.stdout.includes('dump-01'), res.stdout);
+    // Per-plugin summary counts: three FAIL findings, still one failing plugin.
+    assert.match(res.stdout, /1 个插件：0 全通过，1 失败，0 仅警告/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -787,5 +847,33 @@ test('validate CLI: --help prints Chinese usage covering all four options', () =
   assert.equal(res.status, 0);
   for (const opt of ['--plugin', '--root', '--timeout', '--help']) {
     assert.ok(res.stdout.includes(opt), `help must mention ${opt}: ` + res.stdout);
+  }
+});
+
+test('validate: an extra export yields exactly one meta-08 on an otherwise-clean plugin', async () => {
+  const root = makeTempRoot(['bad-extra-export.js']);
+  try {
+    const { exitCode, lines } = await runValidate({ root, plugin: 'bad-extra-export' });
+    assert.equal(exitCode, 1);
+    const fails = lines.filter((l) => l.startsWith('FAIL'));
+    assert.equal(fails.length, 1, JSON.stringify(lines));
+    assert.ok(fails[0].includes('[meta-08]'), fails[0]);
+    assert.match(fails[0], /helper/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate: a non-object namespace value yields exactly one cap-03', async () => {
+  const root = makeTempRoot(['bad-ns-value.js']);
+  try {
+    const { exitCode, lines } = await runValidate({ root, plugin: 'bad-ns-value' });
+    assert.equal(exitCode, 1);
+    const fails = lines.filter((l) => l.startsWith('FAIL'));
+    assert.equal(fails.length, 1, JSON.stringify(lines));
+    assert.ok(fails[0].includes('[cap-03]'), fails[0]);
+    assert.match(fails[0], /search/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
