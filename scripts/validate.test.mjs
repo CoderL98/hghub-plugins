@@ -611,3 +611,181 @@ test('checkLists: empty or absent inputs yield no findings', () => {
   assert.deepEqual(checkLists({}, new Map(), new Set()), []);
   assert.deepEqual(checkLists(null, null, null), []);
 });
+
+// ---------------------------------------------------------------------------
+// validate.mjs: main-process short-circuits (runValidate direct) + CLI
+// integration. Temporary roots copy fixtures into <t>/plugins/ (never
+// symlink) and write their own lists on demand; CLI cases run as child
+// processes so the exit code and the spawn/kill watchdog are both real.
+// ---------------------------------------------------------------------------
+
+import { runValidate } from './validate.mjs';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+
+const validateScript = path.join(here, 'validate.mjs');
+
+function makeTempRoot(fixtureNames) {
+  const root = mkdtempSync(path.join(tmpdir(), 'hghub-validate-'));
+  mkdirSync(path.join(root, 'plugins'));
+  for (const name of fixtureNames) {
+    cpSync(path.join(fixturesDir, name), path.join(root, 'plugins', name));
+  }
+  return root;
+}
+
+function runCli(args, { timeout = 15000 } = {}) {
+  return spawnSync(process.execPath, [validateScript, ...args], { encoding: 'utf8', timeout });
+}
+
+function okPluginSource(id, name) {
+  return `export const meta = { id: ${JSON.stringify(id)}, name: ${JSON.stringify(name)}, version: '1.0.0', protocol: 1, description: 'd', author: 't' };\n`
+    + 'export default function factory() {\n'
+    + '  return { media: { getDetail() {}, resolvePlayback() {} } };\n'
+    + '}\n';
+}
+
+test('validate: file-01 short-circuits a >2MiB plugin before any spawn', async () => {
+  const root = makeTempRoot([]);
+  try {
+    // Valid JS padded past the 2MiB host cap with a comment block.
+    const padding = '// ' + 'x'.repeat(3 * 1024 * 1024) + '\n';
+    const bigPath = path.join(root, 'plugins', 'big.js');
+    writeFileSync(bigPath, padding + okPluginSource('big', 'Big'));
+    assert.ok(statSync(bigPath).size > 2 * 1024 * 1024);
+
+    const { exitCode, lines } = await runValidate({ root });
+    assert.equal(exitCode, 1);
+    const file01 = lines.filter((l) => l.includes('[file-01]'));
+    assert.equal(file01.length, 1, JSON.stringify(lines));
+    assert.ok(file01[0].startsWith('FAIL big — [file-01]'), file01[0]);
+    assert.ok(!lines.some((l) => l.includes('dump-01')), 'file-01 must short-circuit before spawn: ' + JSON.stringify(lines));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate: meta-03 flags a duplicate id across two files in one root', async () => {
+  const root = makeTempRoot([]);
+  try {
+    // Both files declare id 'a'; only a.js matches its file stem.
+    writeFileSync(path.join(root, 'plugins', 'a.js'), okPluginSource('a', 'Dup A'));
+    writeFileSync(path.join(root, 'plugins', 'b.js'), okPluginSource('a', 'Dup B'));
+    const { exitCode, lines } = await runValidate({ root });
+    assert.equal(exitCode, 1);
+    const meta03 = lines.filter((l) => l.includes('[meta-03]'));
+    assert.ok(meta03.length >= 1, JSON.stringify(lines));
+    assert.ok(meta03.some((l) => l.includes('重复') && l.includes('2 处')), JSON.stringify(meta03));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate: meta-08 is the only finding for a plugin missing the default export', async () => {
+  const root = makeTempRoot(['bad-exports.js']);
+  try {
+    const { exitCode, lines } = await runValidate({ root, plugin: 'bad-exports' });
+    assert.equal(exitCode, 1);
+    const fails = lines.filter((l) => l.startsWith('FAIL'));
+    assert.equal(fails.length, 1, JSON.stringify(lines));
+    assert.ok(fails[0].includes('[meta-08]'), fails[0]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate CLI: bad-deadloop times out to exactly one dump-01 with exit code 1', () => {
+  const root = makeTempRoot(['bad-deadloop.js']);
+  try {
+    const start = Date.now();
+    const res = runCli(['--plugin', 'bad-deadloop', '--root', root, '--timeout', '2000']);
+    const elapsed = Date.now() - start;
+    assert.equal(res.error, undefined);
+    assert.equal(res.status, 1, 'outer 15s watchdog must not fire');
+    assert.ok(elapsed >= 2000 && elapsed < 7000, `elapsed ${elapsed}ms outside [2000, 7000)`);
+    const dump01 = res.stdout.split('\n').filter((l) => l.includes('[dump-01]'));
+    assert.equal(dump01.length, 1, res.stdout);
+    assert.match(dump01[0], /超时/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate CLI: ok-min passes with exit code 0 in a manifest-less root', () => {
+  const root = makeTempRoot(['ok-min.js']);
+  try {
+    const res = runCli(['--plugin', 'ok-min', '--root', root]);
+    assert.equal(res.error, undefined);
+    assert.equal(res.status, 0);
+    assert.match(res.stdout, /^PASS ok-min$/m);
+    assert.match(res.stdout, /校验完成/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate CLI: bad-meta yields at least two distinct meta-* FAILs and no dump-01', () => {
+  const root = makeTempRoot(['bad-meta.js']);
+  try {
+    const res = runCli(['--plugin', 'bad-meta', '--root', root]);
+    assert.equal(res.error, undefined);
+    assert.equal(res.status, 1);
+    const rules = new Set([...res.stdout.matchAll(/\[(meta-[^\]]+)\]/g)].map((m) => m[1]));
+    assert.ok(rules.size >= 2, res.stdout);
+    assert.ok(!res.stdout.includes('dump-01'), res.stdout);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate CLI: bad-factory yields exactly one dump-01 from the factory stage', () => {
+  const root = makeTempRoot(['bad-factory.js']);
+  try {
+    const res = runCli(['--plugin', 'bad-factory', '--root', root]);
+    assert.equal(res.error, undefined);
+    assert.equal(res.status, 1);
+    const dump01 = res.stdout.split('\n').filter((l) => l.includes('[dump-01]'));
+    assert.equal(dump01.length, 1, res.stdout);
+    assert.match(dump01[0], /工厂/);
+    assert.match(dump01[0], /factory exploded/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate CLI: manifest version drift yields exactly one list-03', () => {
+  const root = makeTempRoot(['ok-min.js']);
+  try {
+    writeFileSync(path.join(root, 'manifest.json'), JSON.stringify({
+      name: '测试清单',
+      description: '描述',
+      plugins: [{
+        id: 'ok-min',
+        name: 'OK Minimal Fixture',
+        version: '2.0',
+        url: 'plugins/ok-min.js',
+        description: 'x',
+      }],
+    }, null, 2));
+    const res = runCli(['--plugin', 'ok-min', '--root', root]);
+    assert.equal(res.error, undefined);
+    assert.equal(res.status, 1);
+    const fails = res.stdout.split('\n').filter((l) => l.startsWith('FAIL'));
+    assert.equal(fails.length, 1, res.stdout);
+    assert.ok(fails[0].includes('[list-03]'), fails[0]);
+    for (const rule of ['list-01', 'list-02', 'list-04', 'warn-02']) {
+      assert.ok(!res.stdout.includes(rule), `${rule} must not fire in --plugin mode: ` + res.stdout);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate CLI: --help prints Chinese usage covering all four options', () => {
+  const res = runCli(['--help']);
+  assert.equal(res.error, undefined);
+  assert.equal(res.status, 0);
+  for (const opt of ['--plugin', '--root', '--timeout', '--help']) {
+    assert.ok(res.stdout.includes(opt), `help must mention ${opt}: ` + res.stdout);
+  }
+});
