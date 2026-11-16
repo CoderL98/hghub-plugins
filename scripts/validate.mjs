@@ -10,7 +10,7 @@
 // Failure short-circuits owned here (never handed to checkPlugin, which only
 // accepts ok:true envelopes):
 //   file-01 — plugin file > 2MiB, rejected before spawn
-//             (spec §5, host runtime.rs:277-280)
+//             [host runtime.rs:277-280]
 //   meta-08 — envelope ok:false, stage "import", message prefixed "exports:"
 //   dump-01 — timeout (killed, stderr excerpt folded into the message),
 //             non-zero meta-dump exit code, polluted stdout (via
@@ -28,7 +28,7 @@ const metaDumpPath = path.join(here, 'meta-dump.mjs');
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const MAX_TIMEOUT_MS = 2147483647; // Node clamps larger setTimeout delays to 1ms
-const MAX_PLUGIN_BYTES = 2 * 1024 * 1024; // file-01 host cap (spec §5)
+const MAX_PLUGIN_BYTES = 2 * 1024 * 1024; // file-01 host cap (runtime.rs:277-280)
 const CHUNK_SIZE = 4; // pinned concurrency: chunked Promise.all, no worker pool
 const STDERR_EXCERPT_CP = 200; // stderr excerpt cap in code points
 
@@ -44,7 +44,7 @@ function finding(rule, severity, pluginId, message) {
   return { rule, severity, pluginId, message: `${rule} ${message}` };
 }
 
-// Code-point-aware truncation (Rust chars().count() alignment, spec §9).
+// Code-point-aware truncation (Rust chars().count() alignment).
 function cpTruncate(s, maxCp) {
   const cps = [...s];
   return cps.length <= maxCp ? s : cps.slice(0, maxCp).join('') + '…';
@@ -153,10 +153,10 @@ function pluginFindings(fileName, size, raw, envelope, ctx, timeout) {
   }
   if (envelope.ok === true) {
     const findings = checkPlugin({ ...envelope, fileName, fileSize: size }, ctx);
-    // meta-08 (spec §12 errata): the host requires exactly {meta, default}.
-    // The worker's "exports:" failure envelope only covers missing meta /
-    // missing-or-non-function default — extra exports reach this ok:true
-    // path, so judge moduleExports here.
+    // meta-08 [host runtime.rs:172-195]: the host requires exactly
+    // {meta, default}. The worker's "exports:" failure envelope only covers
+    // missing meta / missing-or-non-function default — extra exports reach
+    // this ok:true path, so judge moduleExports here.
     const mod = envelope.moduleExports;
     const exportKeys = mod !== null && typeof mod === 'object' && !Array.isArray(mod)
       ? Object.keys(mod).sort()
@@ -180,8 +180,9 @@ function pluginFindings(fileName, size, raw, envelope, ctx, timeout) {
 }
 
 // Read the four list files. Missing → null (checkLists skips that list's
-// rules); unparsable → null plus a list-04 finding naming the file (3a
-// handoff: parse failures are the caller's business).
+// rules); unparsable → null plus a list-04 finding naming the file (the
+// caller owns list parsing, so parse failures are reported here —
+// checkLists cannot tell a missing list from a broken one).
 function readLists(root) {
   const lists = {};
   const parseFailures = [];
@@ -303,12 +304,12 @@ export async function runValidate({ root = repoRoot, plugin, timeout = DEFAULT_T
     // Whole-repo mode: full list consistency incl. global invariants.
     listFindings = checkLists(lists, dumps, new Set(targets.map(fileStem)));
   } else {
-    // --plugin mode (spec §6): skip global invariants list-01/02/04; check
+    // --plugin mode: skip the whole-repo invariants list-01/02/04; check
     // only this id's entries in the lists that exist. Entries are filtered
     // to the plugin id first so the url check cannot spill onto other ids;
     // each list is then passed alone (fileNames=null, other lists absent)
     // so only its list-03 can fire. warn-02 still judges when 18.json
-    // exists (3a handoff ②: no fine-grained switch, accepted). List JSON
+    // exists (no fine-grained switch; judging it is accepted). List JSON
     // parse failures are ALWAYS reported (also in --plugin mode) — see
     // readLists, which appends the list-04 finding regardless of mode.
     for (const [key] of LIST_FILES) {

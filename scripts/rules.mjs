@@ -12,6 +12,7 @@
 //   prelude.js — src-tauri/crates/hpp/src/prelude.js
 //   model.rs   — src-tauri/crates/hpp/src/model.rs
 //   manager.rs — src-tauri/crates/hpp/src/manager.rs
+//   runtime.rs — src-tauri/crates/hpp/src/runtime.rs
 //
 // Layering convention to keep one violation in one rule: meta-01 owns the
 // *shape* of declared fields (container types and item types); value-level
@@ -333,7 +334,7 @@ function meta12(meta) {
 function capabilitiesOf(dump) {
   return isPlainObject(dump.capabilities) ? dump.capabilities : {};
 }
-const hasCap = (caps, key) => caps[key] === true; // 只认 === true（spec §11）
+const hasCap = (caps, key) => caps[key] === true; // 只认 === true（信封能力表约定）
 const hasNamespace = (caps, ns) => Object.entries(caps).some(([k, v]) => v === true && k.startsWith(ns + '.'));
 
 // Host serde default: a missing kind means "source".
@@ -358,7 +359,7 @@ function cap02(dump) {
 }
 
 // cap-03 [host prelude.js:168-171] — a namespace declared on the factory
-// result (spec §12 declaredNamespaces: one-level keys, any value type) whose
+// result (declaredNamespaces: one-level keys, any value type) whose
 // name is in the required-method table must expose the full set as
 // capabilities. A non-object or empty-object value yields no capabilities
 // and fails here. Dumps without declaredNamespaces (hand-built) fall back to
@@ -405,7 +406,7 @@ function warn01(meta) {
   return /^[a-z0-9]+(-[a-z0-9]+)*$/.test(id) ? undefined : `id "${id}" 不符合 kebab-case（仓库风格）`;
 }
 
-// warn-03 — missing description/author.
+// warn-03 [repo style policy] — missing description/author.
 function warn03(meta) {
   const p = [];
   for (const key of ['description', 'author']) {
@@ -415,7 +416,7 @@ function warn03(meta) {
   return joinProblems(p);
 }
 
-// Rule table: spec §5 meta-01..07, meta-09..12, cap-01..05, warn-01/warn-03.
+// Rule table: meta-01..07, meta-09..12, cap-01..05, warn-01/warn-03.
 // meta-08 / file-01 / dump-01 are main-process short-circuits outside
 // checkPlugin. Each check returns one message (violations joined by '; ')
 // or undefined.
@@ -473,7 +474,8 @@ export function parseEnvelope(stdoutText, pluginId) {
 }
 
 // ---------------------------------------------------------------------------
-// Subscription-list consistency (spec §6): list-01..04 + warn-02.
+// Subscription-list consistency (repo-side invariants — the host never
+// reads subs/): list-01..04 + warn-02.
 //
 // checkLists is a pure function over already-parsed list objects. The CLI
 // reads manifest.json / subs/{all,vod,18}.json and passes each parsed object
@@ -510,7 +512,7 @@ function listEntries(list) {
 }
 const idSet = (entries) => new Set(entries.map((e) => e.id));
 
-// list-01 [spec §6] — manifest id set === plugins/*.js file stems.
+// list-01 [repo invariant] — manifest id set === plugins/*.js file stems.
 function list01(manifest, fileNames) {
   if (!isPlainObject(manifest) || fileNames === undefined || fileNames === null) return undefined;
   const ids = idSet(listEntries(manifest));
@@ -523,7 +525,7 @@ function list01(manifest, fileNames) {
   return joinProblems(p);
 }
 
-// list-02 [spec §6] — all.json id set === manifest id set (build-subs.mjs
+// list-02 [repo invariant] — all.json id set === manifest id set (build-subs.mjs
 // writes both files from the same source array, so any drift is hand-editing).
 function list02(manifest, all) {
   if (!isPlainObject(manifest) || !isPlainObject(all)) return undefined;
@@ -537,7 +539,7 @@ function list02(manifest, all) {
   return joinProblems(p);
 }
 
-// list-03 [spec §6] — entry name/version match the plugin meta and url is
+// list-03 [repo invariant] — entry name/version match the plugin meta and url is
 // exactly plugins/<id>.js; description is exempt (regex-extracted by
 // build-subs.mjs). Ill-typed meta values stay meta-01's shape business, and
 // entries without an ok dump are skipped: their membership is already
@@ -559,7 +561,7 @@ function list03Problems(entry, dump, file) {
   return joinProblems(p);
 }
 
-// list-04 [spec §6] — vod∩18 = ∅ and vod∪18 = all (the mature partition of
+// list-04 [repo invariant] — vod∩18 = ∅ and vod∪18 = all (the mature partition of
 // all.json). Needs all three lists.
 function list04(all, vod, nsfw18) {
   if (!isPlainObject(all) || !isPlainObject(vod) || !isPlainObject(nsfw18)) return undefined;
@@ -577,7 +579,7 @@ function list04(all, vod, nsfw18) {
   return joinProblems(p);
 }
 
-// warn-02 [spec §6] — mature flag vs 18.json membership, both directions.
+// warn-02 [repo invariant] — mature flag vs 18.json membership, both directions.
 // The meta field is authoritative; the fix is rerunning build-subs.mjs.
 // Returns [pluginId, problem] pairs.
 function warn02(nsfw18, dumps) {
@@ -598,7 +600,7 @@ function warn02(nsfw18, dumps) {
   return hits;
 }
 
-// checkLists(lists, dumps, fileNames) → Finding[] for the spec §6 rules,
+// checkLists(lists, dumps, fileNames) → Finding[] for the list-consistency rules,
 // same Finding shape as checkPlugin. `lists` values of null (missing or
 // unparsable file) skip the rules that consume them; a null `fileNames`
 // skips list-01 (no full file scan available).

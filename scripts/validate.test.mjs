@@ -68,7 +68,7 @@ test('meta-dump: envelope carries declaredNamespaces for every one-level key', (
   const res = runDump('ok-async.js');
   assert.equal(res.error, undefined);
   const envelope = parseSingleLine(res.stdout);
-  // spec §12: one-level key names of the factory result, insertion order,
+  // One-level key names of the factory result, insertion order,
   // regardless of whether the value is an object.
   assert.deepEqual(envelope.declaredNamespaces, ['endpoints', 'media', 'extras']);
 });
@@ -387,7 +387,7 @@ test('rules: cap-03 flags declared namespaces with missing required methods', ()
 });
 
 test('rules: cap-03 flags a declared namespace whose value is not a method object', () => {
-  // spec §12: declaredNamespaces carries the declaration even when the value
+  // declaredNamespaces carries the declaration even when the value
   // is a string, so the required-method check still has something to judge.
   const dump = {
     ok: true,
@@ -526,7 +526,7 @@ test('parseEnvelope: valid JSON that is not an envelope object also yields dump-
 });
 
 // ---------------------------------------------------------------------------
-// rules.mjs: checkLists (subscription list consistency, spec §6)
+// rules.mjs: checkLists (subscription-list consistency — repo invariants)
 //
 // Lists are constructed directly: the CLI owns reading/parsing and passes
 // null for each missing OR unparsable list. The parse-failure list-04 with

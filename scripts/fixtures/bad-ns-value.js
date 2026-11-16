@@ -18,7 +18,7 @@ export default function factory() {
       },
     },
     // Declared namespace with a non-object value: the host rejects it and
-    // the validator must flag it via declaredNamespaces (spec §12).
+    // the validator must flag it via declaredNamespaces.
     search: 'str',
   };
 }

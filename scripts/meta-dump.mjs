@@ -139,8 +139,8 @@ async function main() {
       meta: mod.meta,
       moduleExports: describeModuleExports(mod),
       capabilities: collectCapabilities(returned),
-      // spec §12: one-level key names of the factory result, regardless of
-      // value type — a declared namespace with a non-object/empty value
+      // One-level key names of the factory result, regardless of value
+      // type — a declared namespace with a non-object/empty value
       // collects no capabilities, so the declaration itself must survive.
       declaredNamespaces: returned !== null && typeof returned === 'object' ? Object.keys(returned) : [],
     };

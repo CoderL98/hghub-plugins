@@ -7,7 +7,7 @@ export const meta = {
   author: 'test',
 };
 
-// The host contract (spec §5 meta-08) requires exactly {meta, default}.
+// The host contract (meta-08) requires exactly {meta, default}.
 export const helper = 1;
 
 export default function factory() {
