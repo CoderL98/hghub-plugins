@@ -363,7 +363,8 @@ function cap02(dump) {
 // name is in the required-method table must expose the full set as
 // capabilities. A non-object or empty-object value yields no capabilities
 // and fails here. Dumps without declaredNamespaces (hand-built) fall back to
-// inferring the namespaces from capability keys — the pre-§12 behaviour.
+// inferring the namespaces from capability keys (the
+// declaredNamespaces-less fallback behaviour).
 function cap03(dump) {
   const caps = capabilitiesOf(dump);
   const declared = Array.isArray(dump.declaredNamespaces)

@@ -50,14 +50,18 @@ function cpTruncate(s, maxCp) {
   return cps.length <= maxCp ? s : cps.slice(0, maxCp).join('') + '…';
 }
 
-// Strip C0/C1 control characters (incl. the ANSI ESC introducer and BEL)
-// from text before it enters a report line; only printable text survives.
+// Strip ALL C0/C1 control characters (tab, newline, ANSI ESC introducer,
+// BEL, ...) from text before it enters a report line: report lines must be
+// single lines of printable text, so plugin-controlled ids and messages can
+// neither forge extra lines nor garble the report.
 const stripControls = (s) => (typeof s === 'string'
-  ? s.replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, '')
+  ? s.replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
   : s);
 
 function stderrExcerpt(stderr) {
-  const oneLine = stripControls(stderr).trim().split(/\r?\n/).filter(Boolean).join(' | ');
+  // Join stderr lines before stripping: the ' | ' separators survive as
+  // printable text, everything else control-ish is dropped per segment.
+  const oneLine = stderr.trim().split(/\r?\n/).filter(Boolean).map(stripControls).join(' | ');
   return oneLine ? `；stderr 摘要：${cpTruncate(oneLine, STDERR_EXCERPT_CP)}` : '';
 }
 
@@ -330,13 +334,15 @@ export async function runValidate({ root = repoRoot, plugin, timeout = DEFAULT_T
   // several), list problems are tallied separately. Plain text — ANSI
   // colouring is the CLI shell's business (no TTY here).
   const statusOf = { fail: 'FAIL', warn: 'WARN' };
-  // desc: strip the "rule " prefix rules.mjs bakes into messages, then strip
-  // C0/C1 controls (ANSI ESC, BEL, ...) so plugin-controlled text can never
-  // forge or garble the report lines.
+  // desc: strip the "rule " prefix rules.mjs bakes into messages.
   const desc = (f) => stripControls(
     f.message.startsWith(f.rule + ' ') ? f.message.slice(f.rule.length + 1) : f.message,
   );
-  const lineOf = (f) => `${statusOf[f.severity] || 'FAIL'} ${f.pluginId} — [${f.rule}] ${desc(f)}`;
+  // lineOf: the whole line goes through stripControls so the plugin-controlled
+  // pluginId cannot smuggle a newline and forge an extra report line.
+  const lineOf = (f) => stripControls(
+    `${statusOf[f.severity] || 'FAIL'} ${f.pluginId} — [${f.rule}] ${desc(f)}`,
+  );
 
   let passPlugins = 0;
   let failPlugins = 0;

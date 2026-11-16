@@ -1038,3 +1038,39 @@ test('validate: a symlinked plugin file is ignored by the scan', async (t) => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('validate: control characters in plugin ids cannot forge report lines', async () => {
+  const root = makeTempRoot(['bad-inject.js']);
+  try {
+    const { exitCode, lines } = await runValidate({ root, plugin: 'bad-inject' });
+    assert.equal(exitCode, 1);
+    // No forged standalone PASS line and no embedded newline anywhere —
+    // every report line must be a single line of printable text.
+    assert.ok(!lines.some((l) => l.startsWith('PASS totally-fine')), JSON.stringify(lines));
+    assert.ok(
+      lines.every((l) => !/[\u0000-\u001F\u007F-\u009F]/.test(l)),
+      JSON.stringify(lines),
+    );
+    // The attack text stays inline on the FAIL line instead of breaking it.
+    const failLine = lines.find((l) => l.includes('[meta-02]'));
+    assert.ok(failLine, JSON.stringify(lines));
+    assert.ok(failLine.includes('PASS totally-fine'), failLine);
+    assert.ok(failLine.startsWith('FAIL evil'), failLine);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate CLI: warn-only plugin exits 0 with a WARN line', () => {
+  const root = makeTempRoot(['ok-no-desc.js']);
+  try {
+    const res = runCli(['--plugin', 'ok-no-desc', '--root', root]);
+    assert.equal(res.error, undefined);
+    assert.equal(res.status, 0); // WARN never fails the run (CI contract)
+    assert.match(res.stdout, /^WARN ok-no-desc — \[warn-03\]/m);
+    assert.ok(!res.stdout.split('\n').some((l) => l.startsWith('FAIL')), res.stdout);
+    assert.match(res.stdout, /1 个插件：0 全通过，0 失败，1 仅警告/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
