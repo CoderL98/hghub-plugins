@@ -1,7 +1,7 @@
 export const meta = {
   id: 'hjkk',
   name: '韩剧看看',
-  version: '1.0.0',
+  version: '1.0.1',
   protocol: 1,
   description: '韩剧看看：韩剧、韩影、韩综分类、搜索、详情与播放解析。',
   author: 'community',
@@ -151,15 +151,15 @@ export default function (hg) {
         const url = origin() + LIST_TPL.replace('{id}', '1').replace('{page}', String(page));
         const html = await fetchHtml(url, ctx);
         const items = parseList(html, '.module-poster-item', 'series');
-        return { sections: [{ id: 'drama', title: '韩剧', layout: 'grid', items }] };
+        return { items: [{ id: 'drama', title: '韩剧', layout: 'grid', items }], next: null };
       },
     },
 
     catalog: {
-      async listCategories() {
-        return { items: TABS.map(function (t) { return { id: t.id, label: t.label }; }) };
+      async getCategories() {
+        return TABS.map(function (t) { return { id: t.id, label: t.label }; });
       },
-      async listItems(params, ctx) {
+      async list(params, ctx) {
         const id = (params && params.categoryId) || '1';
         const page = pageOf(params && params.cursor);
         const url = origin() + LIST_TPL.replace('{id}', id).replace('{page}', String(page));
@@ -247,7 +247,7 @@ export default function (hg) {
           const u = new URL(raw);
           if (!/hanjukankan\.com$/i.test(u.hostname)) return null;
           if (!u.pathname || u.pathname === '/') return null;
-          return { id: u.pathname };
+          return { mediaId: u.pathname };
         } catch (_) {
           return null;
         }

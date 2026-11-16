@@ -1,7 +1,7 @@
 export const meta = {
   id: 'tiantian',
   name: '天天影视',
-  version: '1.0.0',
+  version: '1.0.1',
   protocol: 1,
   description: '天天影视 App 接口：分类、搜索、详情与播放。上游为 HTTP，请求带 MD5 签名。',
   author: 'community',
@@ -114,15 +114,15 @@ export default function (hg) {
         const tabs = await loadTabs(ctx);
         const body = await post('/v2/home/type_search', { type_id: tabs[0].id, page: 1, limit: 12 }, ctx, '首页');
         const items = mapCards(body.data && body.data.list);
-        return { sections: [{ id: 'latest', title: tabs[0].label, layout: 'grid', items }] };
+        return { items: [{ id: 'latest', title: tabs[0].label, layout: 'grid', items }], next: null };
       },
     },
 
     catalog: {
-      async listCategories(params, ctx) {
-        return { items: await loadTabs(ctx) };
+      async getCategories(params, ctx) {
+        return loadTabs(ctx);
       },
-      async listItems(params, ctx) {
+      async list(params, ctx) {
         const id = (params && params.categoryId) || '1';
         const page = pageOf(params && params.cursor);
         const body = await post('/v2/home/type_search', { type_id: id, page, limit: 12 }, ctx, '分类');

@@ -1,7 +1,7 @@
 export const meta = {
   id: 'wwgz',
   name: '农民影视',
-  version: '1.0.0',
+  version: '1.0.1',
   protocol: 1,
   description: '农民影视：分类、搜索、多线路详情与 nmvod 播放解析。',
   author: 'community',
@@ -111,15 +111,15 @@ export default function (hg) {
     home: {
       async getSections(params, ctx) {
         const html = await fetchHtml(origin() + '/vod-list-id-1-pg-1-order--by-time-class-0-year-0-letter--area--lang-.html', ctx);
-        return { sections: [{ id: 'movie', title: '电影', layout: 'grid', items: parseCards(html, 'movie') }] };
+        return { items: [{ id: 'movie', title: '电影', layout: 'grid', items: parseCards(html, 'movie') }], next: null };
       },
     },
 
     catalog: {
-      async listCategories() {
-        return { items: TABS.map(function (t) { return { id: t.id, label: t.label }; }) };
+      async getCategories() {
+        return TABS.map(function (t) { return { id: t.id, label: t.label }; });
       },
-      async listItems(params, ctx) {
+      async list(params, ctx) {
         const id = (params && params.categoryId) || '1';
         const page = pageOf(params && params.cursor);
         const url = origin() + '/vod-list-id-' + id + '-pg-' + page + '-order--by-time-class-0-year-0-letter--area--lang-.html';

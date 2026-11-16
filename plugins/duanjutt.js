@@ -1,7 +1,7 @@
 export const meta = {
   id: 'duanjutt',
   name: '短剧天堂',
-  version: '1.0.0',
+  version: '1.0.1',
   protocol: 1,
   description: '短剧天堂：分类、详情与播放。搜索页有验证码，当前不提供搜索。',
   author: 'community',
@@ -126,15 +126,15 @@ export default function (hg) {
       async getSections(params, ctx) {
         const tabs = await loadTabs(ctx);
         const html = await fetchHtml(absUrl(tabs[0].id), ctx);
-        return { sections: [{ id: 'latest', title: tabs[0].label, layout: 'grid', items: parseCards(html) }] };
+        return { items: [{ id: 'latest', title: tabs[0].label, layout: 'grid', items: parseCards(html) }], next: null };
       },
     },
 
     catalog: {
-      async listCategories(params, ctx) {
-        return { items: await loadTabs(ctx) };
+      async getCategories(params, ctx) {
+        return loadTabs(ctx);
       },
-      async listItems(params, ctx) {
+      async list(params, ctx) {
         const cat = (params && params.categoryId) || FALLBACK_TABS[0].id;
         const page = pageOf(params && params.cursor);
         let url = absUrl(cat);

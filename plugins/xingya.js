@@ -1,7 +1,7 @@
 export const meta = {
   id: 'xingya',
   name: '星芽短剧',
-  version: '1.0.0',
+  version: '1.0.1',
   protocol: 1,
   description: '星芽短剧 App 接口：分类、搜索、详情与直链播放。登录令牌保存在插件存储中。',
   author: 'community',
@@ -173,15 +173,15 @@ export default function (hg) {
           '首页',
         );
         const items = mapList(body.data && body.data.list);
-        return { sections: [{ id: 'hot', title: '热播剧', layout: 'grid', items }] };
+        return { items: [{ id: 'hot', title: '热播剧', layout: 'grid', items }], next: null };
       },
     },
 
     catalog: {
-      async listCategories() {
-        return { items: TABS.map(function (t) { return { id: t.id, label: t.label }; }) };
+      async getCategories() {
+        return TABS.map(function (t) { return { id: t.id, label: t.label }; });
       },
-      async listItems(params, ctx) {
+      async list(params, ctx) {
         const id = (params && params.categoryId) || '2';
         const page = pageOf(params && params.cursor);
         const body = await getJson(

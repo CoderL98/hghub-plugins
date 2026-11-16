@@ -1,7 +1,7 @@
 export const meta = {
   id: 'hdmoli',
   name: 'hdmoli',
-  version: '1.0.0',
+  version: '1.0.1',
   protocol: 1,
   description: 'hdmoli：电影、剧集、动画分类、搜索、详情与播放解析。',
   author: 'community',
@@ -132,15 +132,15 @@ export default function (hg) {
     home: {
       async getSections(params, ctx) {
         const html = await fetchHtml(origin() + '/mlist/index1-1.html', ctx);
-        return { sections: [{ id: 'movie', title: '电影', layout: 'grid', items: parseCards(html, 'movie') }] };
+        return { items: [{ id: 'movie', title: '电影', layout: 'grid', items: parseCards(html, 'movie') }], next: null };
       },
     },
 
     catalog: {
-      async listCategories() {
-        return { items: TABS.map(function (t) { return { id: t.id, label: t.label }; }) };
+      async getCategories() {
+        return TABS.map(function (t) { return { id: t.id, label: t.label }; });
       },
-      async listItems(params, ctx) {
+      async list(params, ctx) {
         const id = (params && params.categoryId) || '1';
         const page = pageOf(params && params.cursor);
         const html = await fetchHtml(origin() + '/mlist/index' + id + '-' + page + '.html', ctx);

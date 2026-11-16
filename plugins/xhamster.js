@@ -1,7 +1,7 @@
 export const meta = {
   id: 'xhamster',
   name: 'xHamster',
-  version: '1.0.0',
+  version: '1.0.1',
   protocol: 1,
   description: 'xHamster：分类、搜索、详情与多清晰度播放。',
   author: 'community',
@@ -136,15 +136,15 @@ export default function (hg) {
     home: {
       async getSections(params, ctx) {
         const html = await fetchHtml(origin() + '/newest', ctx);
-        return { sections: [{ id: 'newest', title: '最新', layout: 'grid', items: parseCards(html) }] };
+        return { items: [{ id: 'newest', title: '最新', layout: 'grid', items: parseCards(html) }], next: null };
       },
     },
 
     catalog: {
-      async listCategories() {
-        return { items: TABS.map(function (t) { return { id: t.id, label: t.label }; }) };
+      async getCategories() {
+        return TABS.map(function (t) { return { id: t.id, label: t.label }; });
       },
-      async listItems(params, ctx) {
+      async list(params, ctx) {
         const href = (params && params.categoryId) || '/newest';
         const page = pageOf(params && params.cursor);
         let url = origin() + href;

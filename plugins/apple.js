@@ -1,7 +1,7 @@
 export const meta = {
   id: 'apple',
   name: '小苹果',
-  version: '1.0.0',
+  version: '1.0.1',
   protocol: 1,
   description: '小苹果影视 App 接口：分类、搜索、详情与 HLS 播放。上游为 HTTP。',
   author: 'community',
@@ -102,17 +102,15 @@ export default function (hg) {
     home: {
       async getSections(params, ctx) {
         const body = await getJson('/api.php/v2.vod/androidfilter10086?page=1&type=1', ctx, '首页');
-        return {
-          sections: [{ id: 'movie', title: '电影', layout: 'grid', items: mapCards(body.data, 'movie') }],
-        };
+        return { items: [{ id: 'movie', title: '电影', layout: 'grid', items: mapCards(body.data, 'movie') }], next: null };
       },
     },
 
     catalog: {
-      async listCategories() {
-        return { items: TABS.map(function (t) { return { id: t.id, label: t.label }; }) };
+      async getCategories() {
+        return TABS.map(function (t) { return { id: t.id, label: t.label }; });
       },
-      async listItems(params, ctx) {
+      async list(params, ctx) {
         const id = (params && params.categoryId) || '1';
         const page = pageOf(params && params.cursor);
         const body = await getJson('/api.php/v2.vod/androidfilter10086?page=' + page + '&type=' + encodeURIComponent(id), ctx, '分类');

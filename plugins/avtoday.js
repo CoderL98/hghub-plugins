@@ -1,7 +1,7 @@
 export const meta = {
   id: 'avtoday',
   name: 'avtoday',
-  version: '1.0.0',
+  version: '1.0.1',
   protocol: 1,
   description: 'avtoday：分类、搜索、详情与 HLS 播放。',
   author: 'community',
@@ -116,15 +116,15 @@ export default function (hg) {
     home: {
       async getSections(params, ctx) {
         const html = await fetchHtml(origin() + '/', ctx);
-        return { sections: [{ id: 'latest', title: '最新', layout: 'grid', items: parseCards(html) }] };
+        return { items: [{ id: 'latest', title: '最新', layout: 'grid', items: parseCards(html) }], next: null };
       },
     },
 
     catalog: {
-      async listCategories(params, ctx) {
-        return { items: await loadTabs(ctx) };
+      async getCategories(params, ctx) {
+        return loadTabs(ctx);
       },
-      async listItems(params, ctx) {
+      async list(params, ctx) {
         const cat = (params && params.categoryId) || origin() + '/';
         const page = pageOf(params && params.cursor);
         let url = absUrl(cat);

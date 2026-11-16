@@ -1,7 +1,7 @@
 export const meta = {
   id: '4kav',
   name: '4k-av',
-  version: '1.0.0',
+  version: '1.0.1',
   protocol: 1,
   description: '4kmp 影视源：首页、分类、搜索、详情与直链播放。',
   author: 'community',
@@ -165,23 +165,19 @@ export default function (hg) {
     home: {
       async getSections(params, ctx) {
         const latest = await listByTab(TABS[0], '1', ctx);
-        return {
-          sections: [
+        return { items: [
             { id: 'latest', title: '最新', layout: 'grid', items: latest.items },
-          ],
-        };
+          ], next: null };
       },
     },
 
     catalog: {
-      async listCategories() {
-        return {
-          items: TABS.map(function (t) {
+      async getCategories() {
+        return TABS.map(function (t) {
             return { id: t.id, label: t.label };
-          }),
-        };
+          });
       },
-      async listItems(params, ctx) {
+      async list(params, ctx) {
         const tab = tabOf(params && params.categoryId);
         return listByTab(tab, params && params.cursor, ctx);
       },
@@ -269,7 +265,7 @@ export default function (hg) {
           const u = new URL(raw);
           if (!/4kmp\.com$/i.test(u.hostname)) return null;
           if (u.pathname === '/' || u.pathname === '') return null;
-          return { id: u.pathname.replace(/\/$/, '') };
+          return { mediaId: u.pathname.replace(/\/$/, '') };
         } catch (_) {
           return null;
         }

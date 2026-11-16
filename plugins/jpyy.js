@@ -1,7 +1,7 @@
 export const meta = {
   id: 'jpyy',
   name: '金牌影视',
-  version: '1.0.0',
+  version: '1.0.1',
   protocol: 1,
   description: '金牌影视匿名接口：分类、搜索、详情与播放。签名用 MD5+SHA1。',
   author: 'community',
@@ -127,15 +127,15 @@ export default function (hg) {
         const qs = 'area=&filterStatus=1&lang=&pageNum=1&pageSize=30&sort=1&sortBy=1&type=&type1=1&v_class=&year=';
         const body = await getJson(origin() + '/api/mw-movie/anonymous/video/list?' + qs, ctx, '首页');
         const list = body.data && body.data.list;
-        return { sections: [{ id: 'movie', title: '电影', layout: 'grid', items: mapCards(list, 'movie') }] };
+        return { items: [{ id: 'movie', title: '电影', layout: 'grid', items: mapCards(list, 'movie') }], next: null };
       },
     },
 
     catalog: {
-      async listCategories() {
-        return { items: TABS.map(function (t) { return { id: t.id, label: t.label }; }) };
+      async getCategories() {
+        return TABS.map(function (t) { return { id: t.id, label: t.label }; });
       },
-      async listItems(params, ctx) {
+      async list(params, ctx) {
         const id = (params && params.categoryId) || '1';
         const page = pageOf(params && params.cursor);
         const qs = 'area=&filterStatus=1&lang=&pageNum=' + page + '&pageSize=30&sort=1&sortBy=1&type=&type1=' + encodeURIComponent(id) + '&v_class=&year=';

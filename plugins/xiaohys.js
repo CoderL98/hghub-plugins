@@ -1,7 +1,7 @@
 export const meta = {
   id: 'xiaohys',
   name: '小红影视',
-  version: '1.0.0',
+  version: '1.0.1',
   protocol: 1,
   description: '小红影视：DS 列表接口、详情多线路与 AES 播放解析。',
   author: 'community',
@@ -139,15 +139,15 @@ export default function (hg) {
     home: {
       async getSections(params, ctx) {
         const items = await listVod('1', 1, ctx);
-        return { sections: [{ id: 'movie', title: '电影', layout: 'grid', items }] };
+        return { items: [{ id: 'movie', title: '电影', layout: 'grid', items }], next: null };
       },
     },
 
     catalog: {
-      async listCategories() {
-        return { items: TABS.map(function (t) { return { id: t.id, label: t.label }; }) };
+      async getCategories() {
+        return TABS.map(function (t) { return { id: t.id, label: t.label }; });
       },
-      async listItems(params, ctx) {
+      async list(params, ctx) {
         const id = (params && params.categoryId) || '1';
         const page = pageOf(params && params.cursor);
         const items = await listVod(id, page, ctx);

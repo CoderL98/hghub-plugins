@@ -1,7 +1,7 @@
 export const meta = {
   id: 'pornhub',
   name: 'Pornhub',
-  version: '1.0.0',
+  version: '1.0.1',
   protocol: 1,
   description: 'Pornhub：分类、搜索、详情与 HLS 播放。',
   author: 'community',
@@ -113,15 +113,15 @@ export default function (hg) {
     home: {
       async getSections(params, ctx) {
         const html = await fetchHtml(listUrl('sy', 1), ctx);
-        return { sections: [{ id: 'home', title: '首页', layout: 'grid', items: parseCards(html) }] };
+        return { items: [{ id: 'home', title: '首页', layout: 'grid', items: parseCards(html) }], next: null };
       },
     },
 
     catalog: {
-      async listCategories() {
-        return { items: TABS.map(function (t) { return { id: t.id, label: t.label }; }) };
+      async getCategories() {
+        return TABS.map(function (t) { return { id: t.id, label: t.label }; });
       },
-      async listItems(params, ctx) {
+      async list(params, ctx) {
         const id = (params && params.categoryId) || 'sy';
         const page = pageOf(params && params.cursor);
         const html = await fetchHtml(listUrl(id, page), ctx);

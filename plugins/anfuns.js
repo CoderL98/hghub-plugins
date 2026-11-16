@@ -1,7 +1,7 @@
 export const meta = {
   id: 'anfuns',
   name: 'anfuns',
-  version: '1.0.0',
+  version: '1.0.1',
   protocol: 1,
   description: 'anfuns 动漫源：分类、搜索、多线路详情与播放解析。',
   author: 'community',
@@ -111,15 +111,15 @@ export default function (hg) {
     home: {
       async getSections(params, ctx) {
         const html = await fetchHtml(origin() + '/map.html', ctx);
-        return { sections: [{ id: 'latest', title: '最近更新', layout: 'grid', items: parseCards(html) }] };
+        return { items: [{ id: 'latest', title: '最近更新', layout: 'grid', items: parseCards(html) }], next: null };
       },
     },
 
     catalog: {
-      async listCategories() {
-        return { items: TABS.map(function (t) { return { id: t.id, label: t.label }; }) };
+      async getCategories() {
+        return TABS.map(function (t) { return { id: t.id, label: t.label }; });
       },
-      async listItems(params, ctx) {
+      async list(params, ctx) {
         const id = (params && params.categoryId) || '0';
         const page = pageOf(params && params.cursor);
         const url = id === '0' ? origin() + '/map.html' : origin() + '/type/' + id + '-' + page + '.html';
