@@ -422,3 +422,192 @@ test('parseEnvelope: valid JSON that is not an envelope object also yields dump-
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// rules.mjs: checkLists (subscription list consistency, spec §6)
+//
+// Lists are constructed directly: the CLI owns reading/parsing and passes
+// null for each missing OR unparsable list. The parse-failure list-04 with
+// the file name is appended by the caller — checkLists cannot tell the two
+// null causes apart, so a null list simply skips the rules that need it.
+// ---------------------------------------------------------------------------
+
+import { checkLists } from './rules.mjs';
+
+function makeEntry(id, { version = '1.0.0', name = id, url = `plugins/${id}.js` } = {}) {
+  return { id, name, version, url, description: `${id} 描述` };
+}
+
+function makeList(ids) {
+  return { name: '测试列表', description: '描述', plugins: ids.map((id) => makeEntry(id)) };
+}
+
+function makeDumps(metas) {
+  const dumps = new Map();
+  for (const [id, m = {}] of Object.entries(metas)) {
+    dumps.set(id, {
+      ok: true,
+      meta: { id, name: m.name ?? id, version: m.version ?? '1.0.0', protocol: 1, mature: m.mature ?? false },
+    });
+  }
+  return dumps;
+}
+
+// Green baseline: three files, gamma the only mature plugin (in 18.json).
+function greenLists() {
+  return {
+    manifest: makeList(['alpha', 'beta', 'gamma']),
+    all: makeList(['alpha', 'beta', 'gamma']),
+    vod: makeList(['alpha', 'beta']),
+    nsfw18: makeList(['gamma']),
+  };
+}
+
+const greenDumps = () => makeDumps({ alpha: {}, beta: {}, gamma: { mature: true } });
+const greenFiles = () => new Set(['alpha', 'beta', 'gamma']);
+
+function assertListFinding(findings, rule, severity, pluginId) {
+  const hits = findings.filter((f) => f.rule === rule);
+  assert.equal(hits.length, 1, `expected exactly one ${rule} finding, got ${JSON.stringify(findings)}`);
+  assert.equal(hits[0].severity, severity);
+  assert.equal(hits[0].pluginId, pluginId);
+  assert.match(hits[0].message, new RegExp('^' + rule + ' '));
+  return hits[0];
+}
+
+test('checkLists: consistent lists, dumps and files yield zero findings', () => {
+  assert.deepEqual(checkLists(greenLists(), greenDumps(), greenFiles()), []);
+});
+
+test('checkLists: manifest version drift yields exactly one list-03 finding', () => {
+  const lists = greenLists();
+  lists.manifest.plugins[2].version = '2.0';
+  const findings = checkLists(lists, greenDumps(), greenFiles());
+  assert.equal(findings.length, 1, JSON.stringify(findings));
+  assert.equal(findings[0].rule, 'list-03');
+  assert.equal(findings[0].severity, 'fail');
+  assert.equal(findings[0].pluginId, 'gamma');
+  assert.match(findings[0].message, /manifest\.json/);
+  assert.match(findings[0].message, /version/);
+});
+
+test('checkLists: list-01 flags list entries left without a plugin file', () => {
+  const lists = greenLists();
+  // plugins/ghost.js was deleted but every list still references it.
+  for (const key of ['manifest', 'all', 'vod']) lists[key].plugins.push(makeEntry('ghost'));
+  const finding = assertListFinding(checkLists(lists, greenDumps(), greenFiles()), 'list-01', 'fail', 'manifest.json');
+  assert.match(finding.message, /ghost/);
+});
+
+test('checkLists: list-01 counts short-circuited plugin files too', () => {
+  // deadloop.js exists (its dump failed — fileNames still includes it) but
+  // no list references it.
+  const files = new Set([...greenFiles(), 'deadloop']);
+  const finding = assertListFinding(checkLists(greenLists(), greenDumps(), files), 'list-01', 'fail', 'manifest.json');
+  assert.match(finding.message, /deadloop/);
+});
+
+test('checkLists: a short-circuited plugin only needs its file and list entries', () => {
+  // deadloop is fully listed; without an ok dump there is nothing to compare
+  // against (and a stray failure envelope in the map must be ignored).
+  const lists = greenLists();
+  for (const key of ['manifest', 'all', 'vod']) lists[key].plugins.push(makeEntry('deadloop'));
+  const files = new Set([...greenFiles(), 'deadloop']);
+  const dumps = greenDumps();
+  dumps.set('deadloop', { ok: false, stage: 'factory', message: 'boom' });
+  assert.deepEqual(checkLists(lists, dumps, files), []);
+});
+
+test('checkLists: list-02 flags all.json ids diverging from manifest ids', () => {
+  const lists = greenLists();
+  lists.all = makeList(['alpha', 'beta']); // gamma dropped from all.json
+  lists.nsfw18 = makeList([]); // keep vod∪18 === all and mature off
+  const dumps = makeDumps({ alpha: {}, beta: {}, gamma: {} });
+  const finding = assertListFinding(checkLists(lists, dumps, greenFiles()), 'list-02', 'fail', 'subs/all.json');
+  assert.match(finding.message, /gamma/);
+});
+
+test('checkLists: list-04 flags ids listed in both vod and 18', () => {
+  const lists = greenLists();
+  lists.nsfw18 = makeList(['beta', 'gamma']);
+  const dumps = makeDumps({ alpha: {}, beta: { mature: true }, gamma: { mature: true } });
+  const finding = assertListFinding(checkLists(lists, dumps, greenFiles()), 'list-04', 'fail', 'subs/all.json');
+  assert.match(finding.message, /beta/);
+});
+
+test('checkLists: list-04 flags all ids uncovered by vod∪18', () => {
+  const lists = greenLists();
+  lists.nsfw18 = makeList([]); // gamma left 18.json
+  const dumps = makeDumps({ alpha: {}, beta: {}, gamma: {} });
+  const finding = assertListFinding(checkLists(lists, dumps, greenFiles()), 'list-04', 'fail', 'subs/all.json');
+  assert.match(finding.message, /gamma/);
+});
+
+test('checkLists: list-04 flags vod∪18 ids missing from all', () => {
+  const lists = greenLists();
+  lists.vod = makeList(['alpha', 'beta', 'delta']);
+  const finding = assertListFinding(checkLists(lists, greenDumps(), greenFiles()), 'list-04', 'fail', 'subs/all.json');
+  assert.match(finding.message, /delta/);
+});
+
+test('checkLists: a null list skips exactly the rules that need it', () => {
+  for (const key of ['manifest', 'all', 'vod', 'nsfw18']) {
+    const lists = greenLists();
+    lists[key] = null; // missing or unparsable — indistinguishable here
+    assert.deepEqual(checkLists(lists, greenDumps(), greenFiles()), [], `${key} = null must skip its rules`);
+  }
+  // Without the full file scan list-01 cannot run either.
+  assert.deepEqual(checkLists(greenLists(), greenDumps(), null), []);
+});
+
+test('checkLists: warn-02 flags a mature plugin missing from 18.json', () => {
+  const lists = greenLists();
+  lists.vod = makeList(['alpha', 'beta', 'gamma']); // gamma stayed in vod.json
+  lists.nsfw18 = makeList([]);
+  const finding = assertListFinding(checkLists(lists, greenDumps(), greenFiles()), 'warn-02', 'warn', 'gamma');
+  assert.match(finding.message, /18\.json/);
+  assert.match(finding.message, /build-subs/);
+});
+
+test('checkLists: warn-02 flags a non-mature plugin listed in 18.json', () => {
+  const dumps = makeDumps({ alpha: {}, beta: {}, gamma: {} });
+  const finding = assertListFinding(checkLists(greenLists(), dumps, greenFiles()), 'warn-02', 'warn', 'gamma');
+  assert.match(finding.message, /18\.json/);
+});
+
+test('checkLists: list-03 checks name and url per list file', () => {
+  const nameDrift = greenLists();
+  nameDrift.vod.plugins[0].name = '阿尔法';
+  const nameFinding = assertListFinding(checkLists(nameDrift, greenDumps(), greenFiles()), 'list-03', 'fail', 'alpha');
+  assert.match(nameFinding.message, /subs\/vod\.json/);
+  assert.match(nameFinding.message, /name/);
+
+  const urlDrift = greenLists();
+  urlDrift.nsfw18.plugins[0].url = 'plugins/wrong.js';
+  const urlFinding = assertListFinding(checkLists(urlDrift, greenDumps(), greenFiles()), 'list-03', 'fail', 'gamma');
+  assert.match(urlFinding.message, /subs\/18\.json/);
+  assert.match(urlFinding.message, /url/);
+});
+
+test('checkLists: the same drift in several lists yields one finding per entry', () => {
+  const lists = greenLists();
+  lists.manifest.plugins[0].version = '2.0';
+  lists.all.plugins[0].version = '2.0';
+  const findings = checkLists(lists, greenDumps(), greenFiles());
+  assert.equal(findings.length, 2, JSON.stringify(findings));
+  assert.ok(findings.every((f) => f.rule === 'list-03' && f.pluginId === 'alpha'));
+  assert.ok(findings.some((f) => f.message.includes('manifest.json')));
+  assert.ok(findings.some((f) => f.message.includes('subs/all.json')));
+});
+
+test('checkLists: ill-typed meta values stay meta-01 business (list-03 skips them)', () => {
+  const dumps = greenDumps();
+  dumps.get('alpha').meta.name = 123;
+  dumps.get('beta').meta.version = null;
+  assert.deepEqual(checkLists(greenLists(), dumps, greenFiles()), []);
+});
+
+test('checkLists: empty or absent inputs yield no findings', () => {
+  assert.deepEqual(checkLists({}, new Map(), new Set()), []);
+  assert.deepEqual(checkLists(null, null, null), []);
+});

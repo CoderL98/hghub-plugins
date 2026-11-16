@@ -458,3 +458,161 @@ export function parseEnvelope(stdoutText, pluginId) {
   }
   return { rule: 'dump-01', severity: 'fail', pluginId, message: '输出被污染' };
 }
+
+// ---------------------------------------------------------------------------
+// Subscription-list consistency (spec §6): list-01..04 + warn-02.
+//
+// checkLists is a pure function over already-parsed list objects. The CLI
+// reads manifest.json / subs/{all,vod,18}.json and passes each parsed object
+// or null for a missing OR unparsable file — the two null causes are
+// indistinguishable here, so a null list simply skips every rule that needs
+// it, and the caller reports JSON parse failures itself as list-04 with the
+// file name. dumps maps pluginId → ok:true envelope (short-circuited plugins
+// are absent); fileNames is the full set of plugin file stems including the
+// short-circuited ones (list-01 counts them too).
+//
+// Attribution: repo-level invariants name their list file as pluginId
+// (list-01 → manifest.json, list-02/list-04 → subs/all.json); list-03 and
+// warn-02 name the plugin id they are about.
+// ---------------------------------------------------------------------------
+
+// list-03 applies to every list independently; the label names the offending
+// list in messages. Keys mirror the checkLists `lists` argument.
+const LIST_FILES = [
+  ['manifest', 'manifest.json'],
+  ['all', 'subs/all.json'],
+  ['vod', 'subs/vod.json'],
+  ['nsfw18', 'subs/18.json'],
+];
+
+const okDump = (dump) => (isPlainObject(dump) && dump.ok === true ? dump : undefined);
+const metaOf = (dump) => (isPlainObject(dump.meta) ? dump.meta : {});
+
+// Entries with a usable string id; other entry shapes have no id to compare
+// and are left to the id-set rules and the caller's parse-failure finding.
+function listEntries(list) {
+  if (!isPlainObject(list) || !Array.isArray(list.plugins)) return [];
+  return list.plugins.filter((e) => isPlainObject(e) && typeof e.id === 'string' && e.id !== '');
+}
+const idSet = (entries) => new Set(entries.map((e) => e.id));
+
+// list-01 [spec §6] — manifest id set === plugins/*.js file stems.
+function list01(manifest, fileNames) {
+  if (!isPlainObject(manifest) || fileNames === undefined || fileNames === null) return undefined;
+  const ids = idSet(listEntries(manifest));
+  const files = new Set(fileNames);
+  const p = [];
+  const noFile = [...ids].filter((id) => !files.has(id));
+  const noEntry = [...files].filter((stem) => !ids.has(stem));
+  if (noFile.length) p.push(`manifest 条目缺少插件文件: ${noFile.join(', ')}`);
+  if (noEntry.length) p.push(`插件文件未收录进 manifest: ${noEntry.join(', ')}`);
+  return joinProblems(p);
+}
+
+// list-02 [spec §6] — all.json id set === manifest id set (build-subs.mjs
+// writes both files from the same source array, so any drift is hand-editing).
+function list02(manifest, all) {
+  if (!isPlainObject(manifest) || !isPlainObject(all)) return undefined;
+  const mIds = idSet(listEntries(manifest));
+  const aIds = idSet(listEntries(all));
+  const p = [];
+  const onlyAll = [...aIds].filter((id) => !mIds.has(id));
+  const onlyManifest = [...mIds].filter((id) => !aIds.has(id));
+  if (onlyAll.length) p.push(`仅在 subs/all.json: ${onlyAll.join(', ')}`);
+  if (onlyManifest.length) p.push(`仅在 manifest.json: ${onlyManifest.join(', ')}`);
+  return joinProblems(p);
+}
+
+// list-03 [spec §6] — entry name/version match the plugin meta and url is
+// exactly plugins/<id>.js; description is exempt (regex-extracted by
+// build-subs.mjs). Ill-typed meta values stay meta-01's shape business, and
+// entries without an ok dump are skipped: their membership is already
+// list-01/02/04 business.
+function list03Problems(entry, dump, file) {
+  const p = [];
+  if (entry.url !== `plugins/${entry.id}.js`) {
+    p.push(`${file} url "${entry.url}" 必须为 "plugins/${entry.id}.js"`);
+  }
+  if (dump) {
+    const meta = metaOf(dump);
+    if (typeof meta.name === 'string' && entry.name !== meta.name) {
+      p.push(`${file} name "${entry.name}" 与插件 meta "${meta.name}" 不一致`);
+    }
+    if (typeof meta.version === 'string' && entry.version !== meta.version) {
+      p.push(`${file} version "${entry.version}" 与插件 meta "${meta.version}" 不一致`);
+    }
+  }
+  return joinProblems(p);
+}
+
+// list-04 [spec §6] — vod∩18 = ∅ and vod∪18 = all (the mature partition of
+// all.json). Needs all three lists.
+function list04(all, vod, nsfw18) {
+  if (!isPlainObject(all) || !isPlainObject(vod) || !isPlainObject(nsfw18)) return undefined;
+  const allIds = idSet(listEntries(all));
+  const vodIds = idSet(listEntries(vod));
+  const nsfwIds = idSet(listEntries(nsfw18));
+  const p = [];
+  const overlap = [...vodIds].filter((id) => nsfwIds.has(id));
+  if (overlap.length) p.push(`vod 与 18 重叠: ${overlap.join(', ')}`);
+  const union = new Set([...vodIds, ...nsfwIds]);
+  const uncovered = [...allIds].filter((id) => !union.has(id));
+  const extra = [...union].filter((id) => !allIds.has(id));
+  if (uncovered.length) p.push(`all 条目未被 vod∪18 覆盖: ${uncovered.join(', ')}`);
+  if (extra.length) p.push(`vod∪18 条目不在 all 内: ${extra.join(', ')}`);
+  return joinProblems(p);
+}
+
+// warn-02 [spec §6] — mature flag vs 18.json membership, both directions.
+// The meta field is authoritative; the fix is rerunning build-subs.mjs.
+// Returns [pluginId, problem] pairs.
+function warn02(nsfw18, dumps) {
+  if (!isPlainObject(nsfw18)) return [];
+  const nsfwIds = idSet(listEntries(nsfw18));
+  const hits = [];
+  for (const [key, raw] of dumps) {
+    const dump = okDump(raw);
+    if (!dump) continue;
+    const meta = metaOf(dump);
+    const id = typeof meta.id === 'string' && meta.id ? meta.id : key;
+    if (meta.mature === true && !nsfwIds.has(id)) {
+      hits.push([id, 'mature:true 但未收录进 subs/18.json（以 mature 字段为准，请重跑 node scripts/build-subs.mjs）']);
+    } else if (meta.mature !== true && nsfwIds.has(id)) {
+      hits.push([id, '未标记 mature:true 但收录进 subs/18.json（以 mature 字段为准，请重跑 node scripts/build-subs.mjs）']);
+    }
+  }
+  return hits;
+}
+
+// checkLists(lists, dumps, fileNames) → Finding[] for the spec §6 rules,
+// same Finding shape as checkPlugin. `lists` values of null (missing or
+// unparsable file) skip the rules that consume them; a null `fileNames`
+// skips list-01 (no full file scan available).
+export function checkLists(lists, dumps, fileNames) {
+  const l = isPlainObject(lists) ? lists : {};
+  const dumpMap = dumps instanceof Map ? dumps : new Map();
+  const findings = [];
+  const add = (rule, severity, pluginId, problem) => {
+    findings.push({ rule, severity, pluginId, message: `${rule} ${problem}` });
+  };
+
+  const p01 = list01(l.manifest, fileNames);
+  if (p01) add('list-01', 'fail', 'manifest.json', p01);
+  const p02 = list02(l.manifest, l.all);
+  if (p02) add('list-02', 'fail', 'subs/all.json', p02);
+
+  for (const [key, file] of LIST_FILES) {
+    const list = l[key];
+    if (!isPlainObject(list)) continue;
+    for (const entry of listEntries(list)) {
+      const problems = list03Problems(entry, okDump(dumpMap.get(entry.id)), file);
+      if (problems) add('list-03', 'fail', entry.id, problems);
+    }
+  }
+
+  const p04 = list04(l.all, l.vod, l.nsfw18);
+  if (p04) add('list-04', 'fail', 'subs/all.json', p04);
+
+  for (const [id, problem] of warn02(l.nsfw18, dumpMap)) add('warn-02', 'warn', id, problem);
+  return findings;
+}
