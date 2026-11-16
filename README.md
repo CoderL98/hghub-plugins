@@ -74,7 +74,7 @@ node scripts/build-subs.mjs
 
 ## 校验
 
-对全部插件做静态契约检查（meta 字段、能力声明、订阅清单一致性），不访问网络：
+对全部插件做静态契约检查（meta 字段、能力声明、订阅清单一致性），不访问网络。多数规则对应宿主装载期硬校验（按 HGhub 源码转录），`meta-10`/`meta-11` 与 `warn-*` 为本仓库自加严：
 
 ```bash
 node scripts/validate.mjs
@@ -86,7 +86,7 @@ node scripts/validate.mjs
 node --test scripts/validate.test.mjs
 ```
 
-FAIL 按规则前缀修：`list-*` 是订阅清单过期，重跑上一节的 build-subs.mjs；`meta-*`、`cap-*` 等插件自身问题，改对应 `plugins/*.js` 后重跑。
+FAIL 按规则前缀修：`list-*` 是订阅清单过期，重跑上一节的 build-subs.mjs；`meta-*`、`cap-*` 等插件自身问题，改对应 `plugins/*.js` 后重跑；`dump-01`（执行超时/输出污染）与 `file-01`（文件超过 2MiB）同样是插件自身问题。
 
 ## 尚未转换
 
