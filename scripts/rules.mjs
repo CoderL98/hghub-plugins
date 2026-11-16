@@ -206,12 +206,16 @@ function meta06(meta) {
 }
 
 // meta-07 [type + host model.rs:106-109] — kind enum; resolver needs matches.
+// A missing matches field serde-defaults to an empty vec (model.rs:24), which
+// the host rejects for resolvers, so absent and empty are the same FAIL shape;
+// a non-array, non-undefined matches stays meta-01's shape violation.
 function meta07(meta) {
   if (meta.kind !== undefined && typeof meta.kind !== 'string') return undefined; // 类型问题归 meta-01
   const kind = meta.kind === undefined ? 'source' : meta.kind; // 宿主 serde 缺省 source
   const p = [];
   if (kind !== 'source' && kind !== 'resolver') p.push(`kind "${kind}" 必须为 source 或 resolver`);
-  if (kind === 'resolver' && Array.isArray(meta.matches) && meta.matches.length === 0) {
+  if (kind === 'resolver'
+    && (meta.matches === undefined || (Array.isArray(meta.matches) && meta.matches.length === 0))) {
     p.push('resolver 必须声明非空 matches');
   }
   return joinProblems(p);

@@ -237,6 +237,16 @@ test('rules: meta-07 validates kind and resolver matches', () => {
   assertNoFinding(resolverOk, 'meta-07');
 });
 
+test('rules: meta-07 flags resolvers with a missing matches field', () => {
+  // Host serde defaults an absent matches to an empty vec (model.rs:24),
+  // which is then rejected for resolvers — the same FAIL shape as [].
+  const dump = makeDump({
+    meta: { kind: 'resolver' },
+    capabilities: { 'resolver.resolve': true },
+  });
+  assertFinding(findingsOf(dump), 'meta-07', 'fail');
+});
+
 test('rules: meta-09 validates settings shape, uniqueness and defaults', () => {
   const dump = makeDump({ meta: { settings: [
     { key: 'a', label: 'A', type: 'text' },
