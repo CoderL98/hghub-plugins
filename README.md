@@ -72,6 +72,22 @@ node scripts/build-subs.mjs
 
 会写入 `manifest.json`、`subs/all.json`、`subs/vod.json`、`subs/18.json`。插件 `url` 使用相对路径 `plugins/<id>.js`，同一份 JSON 可挂在 GitHub Raw 或 jsDelivr 上。不要给 `meta.updateUrl` 写死地址，宿主会用来源列表或 JS 的 URL 做更新。
 
+## 校验
+
+对全部插件做静态契约检查（meta 字段、能力声明、订阅清单一致性），不访问网络：
+
+```bash
+node scripts/validate.mjs
+```
+
+`--plugin <id>` 只查单个插件。工具自身的回归测试：
+
+```bash
+node --test scripts/validate.test.mjs
+```
+
+FAIL 按规则前缀修：`list-*` 是订阅清单过期，重跑上一节的 build-subs.mjs；`meta-*`、`cap-*` 等插件自身问题，改对应 `plugins/*.js` 后重跑。
+
 ## 尚未转换
 
 这些 xptv 源本轮没有做成 HPP 插件：
