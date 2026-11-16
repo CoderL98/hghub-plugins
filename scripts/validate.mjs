@@ -27,9 +27,17 @@ const repoRoot = path.resolve(here, '..');
 const metaDumpPath = path.join(here, 'meta-dump.mjs');
 
 const DEFAULT_TIMEOUT_MS = 5000;
+const MAX_TIMEOUT_MS = 2147483647; // Node clamps larger setTimeout delays to 1ms
 const MAX_PLUGIN_BYTES = 2 * 1024 * 1024; // file-01 host cap (spec §5)
 const CHUNK_SIZE = 4; // pinned concurrency: chunked Promise.all, no worker pool
 const STDERR_EXCERPT_CP = 200; // stderr excerpt cap in code points
+
+// Output caps: a runaway plugin flooding the pipes must die long before its
+// timeout or the parent's memory gives out. A legal envelope is one short
+// JSON line, so the stdout cap is generous; stderr carries the redirected
+// console noise. Character counts (post-decode) are close enough for caps.
+const MAX_STDOUT_CHARS = 8 * 1024 * 1024;
+const MAX_STDERR_CHARS = 64 * 1024;
 
 // Finding shape aligned with rules.mjs: message carries the "rule " prefix.
 function finding(rule, severity, pluginId, message) {
@@ -42,37 +50,80 @@ function cpTruncate(s, maxCp) {
   return cps.length <= maxCp ? s : cps.slice(0, maxCp).join('') + '…';
 }
 
+// Strip C0/C1 control characters (incl. the ANSI ESC introducer and BEL)
+// from text before it enters a report line; only printable text survives.
+const stripControls = (s) => (typeof s === 'string'
+  ? s.replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, '')
+  : s);
+
 function stderrExcerpt(stderr) {
-  const oneLine = stderr.trim().split(/\r?\n/).filter(Boolean).join(' | ');
+  const oneLine = stripControls(stderr).trim().split(/\r?\n/).filter(Boolean).join(' | ');
   return oneLine ? `；stderr 摘要：${cpTruncate(oneLine, STDERR_EXCERPT_CP)}` : '';
 }
 
-// Spawn one meta-dump worker. On timeout the child is killed and the promise
-// still resolves only after the 'exit' event — never from the kill() call
-// itself — so the recorded state is the post-mortem truth.
+// Kill the worker's whole process tree. POSIX: workers run detached (own
+// process group, pgid === pid), so killing -pid reaps grandchildren the
+// plugin may have spawned. Windows has no process groups; taskkill /T walks
+// the tree (spawned with array args, no shell).
+function killTree(child) {
+  if (process.platform === 'win32') {
+    if (child.pid) {
+      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
+      killer.on('error', () => { child.kill('SIGKILL'); }); // taskkill unavailable — best effort
+    } else {
+      child.kill('SIGKILL');
+    }
+    return;
+  }
+  if (child.pid) {
+    try {
+      process.kill(-child.pid, 'SIGKILL'); // negative pid = the worker's group
+    } catch {
+      child.kill('SIGKILL'); // group already gone
+    }
+  } else {
+    child.kill('SIGKILL');
+  }
+}
+
+// Spawn one meta-dump worker. The promise resolves only after the 'exit'
+// event — never from the kill itself — so the recorded state is the
+// post-mortem truth. killReason marks why the tree was killed: 'timeout' or
+// the stream whose cap was exceeded ('stdout' | 'stderr').
 function spawnDump(absPath, timeout) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [metaDumpPath, absPath], { windowsHide: true });
+    const isWindows = process.platform === 'win32';
+    const child = spawn(process.execPath, [metaDumpPath, absPath], {
+      windowsHide: true,
+      // POSIX: own process group so killTree can reap the whole tree. On
+      // Windows `detached` only unhandles the console — keep it false there.
+      detached: !isWindows,
+    });
     let stdout = '';
     let stderr = '';
-    let timedOut = false;
+    let killReason = null;
     let settled = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      // SIGKILL, not the default SIGTERM: a plugin may register a no-op
-      // SIGTERM handler and survive (POSIX), hanging the CLI. On Windows
-      // kill() is TerminateProcess regardless of the signal.
-      child.kill('SIGKILL');
-    }, timeout);
+    const stop = (reason) => {
+      if (killReason) return;
+      killReason = reason;
+      killTree(child);
+    };
+    const timer = setTimeout(() => stop('timeout'), timeout);
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (d) => { stdout += d; });
-    child.stderr.on('data', (d) => { stderr += d; });
+    child.stdout.on('data', (d) => {
+      stdout += d;
+      if (stdout.length > MAX_STDOUT_CHARS) stop('stdout');
+    });
+    child.stderr.on('data', (d) => {
+      stderr += d;
+      if (stderr.length > MAX_STDERR_CHARS) stop('stderr');
+    });
     const settle = (result) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ ...result, stdout, stderr, timedOut });
+      resolve({ ...result, stdout, stderr, killReason });
     };
     child.on('error', (err) => settle({ code: null, spawnError: err }));
     child.on('exit', (code) => settle({ code, spawnError: undefined }));
@@ -87,8 +138,12 @@ function pluginFindings(fileName, size, raw, envelope, ctx, timeout) {
   if (raw.spawnError) {
     return [finding('dump-01', 'fail', stem, `无法启动 meta-dump：${raw.spawnError.message}`)];
   }
-  if (raw.timedOut) {
+  if (raw.killReason === 'timeout') {
     return [finding('dump-01', 'fail', stem, `执行超时（>${timeout}ms），已终止${stderrExcerpt(raw.stderr)}`)];
+  }
+  if (raw.killReason) {
+    const cap = raw.killReason === 'stdout' ? MAX_STDOUT_CHARS : MAX_STDERR_CHARS;
+    return [finding('dump-01', 'fail', stem, `输出超限（${raw.killReason} 超过 ${cap} 字符），已终止${stderrExcerpt(raw.stderr)}`)];
   }
   if (raw.code !== 0) {
     return [finding('dump-01', 'fail', stem, `meta-dump 异常退出（code ${raw.code}）${stderrExcerpt(raw.stderr)}`)];
@@ -154,15 +209,17 @@ function readLists(root) {
 export async function runValidate({ root = repoRoot, plugin, timeout = DEFAULT_TIMEOUT_MS } = {}) {
   const lines = [];
   const fail = (message) => ({ exitCode: 2, lines: [message] });
-  if (!Number.isFinite(timeout) || timeout <= 0) {
-    return fail(`错误：--timeout 必须为正整数毫秒数（当前 ${timeout}）`);
+  if (!Number.isInteger(timeout) || timeout < 1 || timeout > MAX_TIMEOUT_MS) {
+    return fail(`错误：--timeout 必须为 1 到 ${MAX_TIMEOUT_MS} 之间的整数毫秒数（当前 ${timeout}）`);
   }
 
   const pluginsDir = path.join(root, 'plugins');
   let fileNames;
   try {
+    // Real .js files only: symlinks are excluded so a linked file can never
+    // pass the id/file-stem invariants or execute via a second name.
     fileNames = readdirSync(pluginsDir, { withFileTypes: true })
-      .filter((e) => e.isFile() && e.name.endsWith('.js'))
+      .filter((e) => e.isFile() && e.name.endsWith('.js') && !e.isSymbolicLink())
       .map((e) => e.name)
       .sort();
   } catch {
@@ -251,7 +308,9 @@ export async function runValidate({ root = repoRoot, plugin, timeout = DEFAULT_T
     // to the plugin id first so the url check cannot spill onto other ids;
     // each list is then passed alone (fileNames=null, other lists absent)
     // so only its list-03 can fire. warn-02 still judges when 18.json
-    // exists (3a handoff ②: no fine-grained switch, accepted).
+    // exists (3a handoff ②: no fine-grained switch, accepted). List JSON
+    // parse failures are ALWAYS reported (also in --plugin mode) — see
+    // readLists, which appends the list-04 finding regardless of mode.
     for (const [key] of LIST_FILES) {
       const list = lists[key];
       if (list === null) continue;
@@ -270,7 +329,12 @@ export async function runValidate({ root = repoRoot, plugin, timeout = DEFAULT_T
   // several), list problems are tallied separately. Plain text — ANSI
   // colouring is the CLI shell's business (no TTY here).
   const statusOf = { fail: 'FAIL', warn: 'WARN' };
-  const desc = (f) => (f.message.startsWith(f.rule + ' ') ? f.message.slice(f.rule.length + 1) : f.message);
+  // desc: strip the "rule " prefix rules.mjs bakes into messages, then strip
+  // C0/C1 controls (ANSI ESC, BEL, ...) so plugin-controlled text can never
+  // forge or garble the report lines.
+  const desc = (f) => stripControls(
+    f.message.startsWith(f.rule + ' ') ? f.message.slice(f.rule.length + 1) : f.message,
+  );
   const lineOf = (f) => `${statusOf[f.severity] || 'FAIL'} ${f.pluginId} — [${f.rule}] ${desc(f)}`;
 
   let passPlugins = 0;
@@ -317,6 +381,7 @@ const USAGE = `用法：node scripts/validate.mjs [--plugin <id>] [--root <dir>]
   --help           显示本帮助
 
 报告：每个插件一行 PASS，或每个问题一行 FAIL/WARN <id> — [规则] 描述，末尾为统计。
+注意：校验器会在子进程中执行插件代码（等同运行任意 JS），请只对可信来源运行。
 退出码：0 无失败；1 存在 FAIL；2 参数或环境错误。`;
 
 function parseCliArgs(argv) {
@@ -354,12 +419,15 @@ async function cliMain() {
 
   let timeout = DEFAULT_TIMEOUT_MS;
   if (opts.timeout !== undefined) {
-    if (!/^[1-9][0-9]*$/.test(opts.timeout)) {
-      process.stderr.write(`错误：--timeout 必须为正整数毫秒数（当前 ${opts.timeout}）\n`);
+    const n = Number(opts.timeout);
+    // Positive integer capped at 2^31-1: Node clamps larger setTimeout
+    // delays to 1ms, which would insta-kill every worker.
+    if (!/^[0-9]+$/.test(opts.timeout) || n < 1 || n > MAX_TIMEOUT_MS) {
+      process.stderr.write(`错误：--timeout 必须为 1 到 ${MAX_TIMEOUT_MS} 之间的整数毫秒数（当前 ${opts.timeout}）\n`);
       process.exitCode = 2;
       return;
     }
-    timeout = Number(opts.timeout);
+    timeout = n;
   }
 
   const { exitCode, lines } = await runValidate({ root: opts.root, plugin: opts.plugin, timeout });

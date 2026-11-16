@@ -1,7 +1,12 @@
-// meta-dump worker: load one plugin in isolation and print a single-line JSON
-// envelope on stdout describing its meta and factory capabilities.
+// meta-dump worker: load one plugin in a child process and print a single-line
+// JSON envelope on stdout describing its meta and factory capabilities.
 //
 //   node scripts/meta-dump.mjs <plugin-file>
+//
+// Trust model: the child EXECUTES the plugin's top-level code and factory —
+// equivalent to running arbitrary JS (it may access the network and the file
+// system). Isolation is for output hygiene and crash containment only; only
+// run this against trusted sources (run CI in a throwaway container).
 //
 // Envelope shapes (exit code is always 0; failures live inside the envelope):
 //   success: {ok: true, meta, moduleExports, capabilities, declaredNamespaces}
@@ -127,20 +132,21 @@ async function main() {
   let returned;
   try {
     returned = await mod.default(createStub());
+    // Collection runs inside the factory stage: a hostile getter throwing
+    // during the sweep is the factory's failure, not an import failure.
+    return {
+      ok: true,
+      meta: mod.meta,
+      moduleExports: describeModuleExports(mod),
+      capabilities: collectCapabilities(returned),
+      // spec §12: one-level key names of the factory result, regardless of
+      // value type — a declared namespace with a non-object/empty value
+      // collects no capabilities, so the declaration itself must survive.
+      declaredNamespaces: returned !== null && typeof returned === 'object' ? Object.keys(returned) : [],
+    };
   } catch (err) {
     return { ok: false, stage: 'factory', message: describeError(err) };
   }
-
-  return {
-    ok: true,
-    meta: mod.meta,
-    moduleExports: describeModuleExports(mod),
-    capabilities: collectCapabilities(returned),
-    // spec §12: one-level key names of the factory result, regardless of
-    // value type — a declared namespace with a non-object/empty value
-    // collects no capabilities, so the declaration itself must survive.
-    declaredNamespaces: returned !== null && typeof returned === 'object' ? Object.keys(returned) : [],
-  };
 }
 
 try {

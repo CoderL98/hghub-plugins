@@ -83,7 +83,7 @@ const TIMEOUT_KEYS = new Set(['read', 'playback', 'login', 'transform']);
 const SETTING_TYPES = new Set(['text', 'password', 'switch', 'number', 'select']);
 // prelude.js:176 — entry-point capabilities that require media.getDetail.
 const GATE_METHODS = ['home.getSections', 'catalog.list', 'search.search', 'feed.list', 'library.listMedia'];
-const MAX_U53 = 900719925474099; // 2^53-1, host version() bound (model.rs:51-71)
+const MAX_U53 = Number.MAX_SAFE_INTEGER; // host version() bound: 2^53-1 (model.rs:51-71)
 
 // Rust chars().count() alignment for length caps.
 const cpLen = (s) => [...s].length;
@@ -370,7 +370,10 @@ function cap03(dump) {
     : [...new Set(Object.keys(caps).filter((k) => caps[k] === true).map((k) => k.split('.')[0]))];
   const p = [];
   for (const ns of declared) {
-    const methods = REQUIRED_METHODS[ns];
+    // Own-property lookup only: prototype-key names like 'hasOwnProperty'
+    // or 'constructor' resolve to inherited functions on the table object
+    // and would crash methods.filter below.
+    const methods = Object.hasOwn(REQUIRED_METHODS, ns) ? REQUIRED_METHODS[ns] : undefined;
     if (!methods || methods.length === 0) continue;
     const missing = methods.filter((m) => !hasCap(caps, ns + '.' + m));
     if (missing.length) p.push(`${ns} 缺少必需方法 ${missing.join('/')}`);

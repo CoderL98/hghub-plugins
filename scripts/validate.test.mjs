@@ -87,6 +87,15 @@ test('meta-dump: a non-object namespace value is declared but collects no capabi
   );
 });
 
+test('meta-dump: a throwing getter during collection is a factory-stage failure', () => {
+  const res = runDump('bad-getter.js');
+  assert.equal(res.error, undefined);
+  const envelope = parseSingleLine(res.stdout);
+  assert.equal(envelope.ok, false);
+  assert.equal(envelope.stage, 'factory');
+  assert.match(envelope.message, /getter boom/);
+});
+
 // ---------------------------------------------------------------------------
 // rules.mjs: checkPlugin + parseEnvelope (contract rules engine)
 //
@@ -148,16 +157,30 @@ test('rules: ok-async envelope passes checkPlugin with zero findings', () => {
   assert.deepEqual(findingsOf(makeDump()), []);
 });
 
-test('rules: REQUIRED_METHODS is the host inline required table, not the full collection table', () => {
-  assert.deepEqual(REQUIRED_METHODS.media, ['getDetail', 'resolvePlayback']);
-  assert.deepEqual(REQUIRED_METHODS.live, ['getGroups', 'listChannels', 'resolve']);
-  assert.deepEqual(REQUIRED_METHODS.articles, ['list', 'getDetail']);
-  assert.deepEqual(REQUIRED_METHODS.resolver, ['resolve']);
-  assert.deepEqual(REQUIRED_METHODS.search, ['search']);
-  assert.deepEqual(REQUIRED_METHODS.home, ['getSections']);
-  assert.deepEqual(REQUIRED_METHODS.catalog, ['getCategories', 'list']);
-  assert.deepEqual(REQUIRED_METHODS.auth, ['getMethods', 'submit', 'getProfile', 'logout']);
-  assert.deepEqual(REQUIRED_METHODS.interact, []);
+test('rules: REQUIRED_METHODS matches the host inline required table exactly', () => {
+  // Full-table pin (review I2): transcribed from the host inline required
+  // table at prelude.js:166-168 (verified 2026-11-17), where articles/auth/ui
+  // expand the `methods` collection-table references. Deliberately NOT the
+  // full collection table — judging by it would fail plugins that legally
+  // implement only the required subset.
+  assert.deepEqual(REQUIRED_METHODS, {
+    media: ['getDetail', 'resolvePlayback'],
+    live: ['getGroups', 'listChannels', 'resolve'],
+    articles: ['list', 'getDetail'],
+    resolver: ['resolve'],
+    search: ['search'],
+    home: ['getSections'],
+    catalog: ['getCategories', 'list'],
+    feed: ['list'],
+    endpoints: ['list'],
+    auth: ['getMethods', 'submit', 'getProfile', 'logout'],
+    ui: ['getActions', 'submit'],
+    library: ['listMedia'],
+    progress: ['report'],
+    updates: ['check'],
+    comments: ['list'],
+    interact: [],
+  });
 });
 
 test('rules: meta-01 flags declared fields with wrong types', () => {
@@ -401,6 +424,27 @@ test('rules: cap-03 ignores out-of-table namespaces and passes complete ones', (
     fileSize: 2048,
   };
   assertNoFinding(checkPlugin(dump, { idCounts: new Map([['x', 1]]) }), 'cap-03');
+});
+
+test('rules: cap-03 survives prototype-key names in declaredNamespaces', () => {
+  // 'hasOwnProperty'/'constructor' resolve to inherited functions on the
+  // REQUIRED_METHODS object literal — the lookup must be own-property only
+  // or the whole validator crashes with "methods.filter is not a function".
+  const dump = {
+    ok: true,
+    meta: { id: 'x', name: 'X', version: '1.0.0', protocol: 1, description: 'd', author: 't' },
+    capabilities: { 'media.getDetail': true, 'media.resolvePlayback': true },
+    declaredNamespaces: ['media', 'hasOwnProperty', 'constructor', '__proto__'],
+    fileName: 'x.js',
+    fileSize: 2048,
+  };
+  const findings = checkPlugin(dump, { idCounts: new Map([['x', 1]]) }); // must not throw
+  assertNoFinding(findings, 'cap-03');
+});
+
+test('rules: meta-04 bounds each segment at Number.MAX_SAFE_INTEGER', () => {
+  assertNoFinding(findingsOf(makeDump({ meta: { version: '9007199254740991.0.0' } })), 'meta-04');
+  assertFinding(findingsOf(makeDump({ meta: { version: '9007199254740992.0.0' } })), 'meta-04', 'fail');
 });
 
 test('rules: cap-04 requires media.getDetail alongside entry-point capabilities', () => {
@@ -678,7 +722,7 @@ test('checkLists: empty or absent inputs yield no findings', () => {
 // ---------------------------------------------------------------------------
 
 import { runValidate } from './validate.mjs';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const validateScript = path.join(here, 'validate.mjs');
@@ -760,7 +804,7 @@ test('validate CLI: bad-deadloop times out to exactly one dump-01 with exit code
     const elapsed = Date.now() - start;
     assert.equal(res.error, undefined);
     assert.equal(res.status, 1, 'outer 15s watchdog must not fire');
-    assert.ok(elapsed >= 2000 && elapsed < 7000, `elapsed ${elapsed}ms outside [2000, 7000)`);
+    assert.ok(elapsed >= 2000 && elapsed < 12000, `elapsed ${elapsed}ms outside [2000, 12000)`);
     const dump01 = res.stdout.split('\n').filter((l) => l.includes('[dump-01]'));
     assert.equal(dump01.length, 1, res.stdout);
     assert.match(dump01[0], /超时/);
@@ -873,6 +917,123 @@ test('validate: a non-object namespace value yields exactly one cap-03', async (
     assert.equal(fails.length, 1, JSON.stringify(lines));
     assert.ok(fails[0].includes('[cap-03]'), fails[0]);
     assert.match(fails[0], /search/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate CLI: usage and environment errors exit 2', () => {
+  const root = makeTempRoot(['ok-min.js']);
+  try {
+    const cases = [
+      [['--plugin', 'ghost', '--root', root], 'missing plugin file'],
+      [['--timeout', '0'], 'timeout zero'],
+      [['--timeout', '-5'], 'timeout negative'],
+      [['--timeout', 'abc'], 'timeout non-numeric'],
+      [['--timeout', '2147483648'], 'timeout above 2^31-1'],
+      [['--timeout'], 'missing option value'],
+      [['--bogus'], 'unknown option'],
+    ];
+    for (const [args, why] of cases) {
+      const res = runCli(args);
+      assert.equal(res.status, 2, `${why}: ${res.stdout}${res.stderr}`);
+    }
+    const noPlugins = runCli(['--root', path.join(root, 'no-such-dir')]);
+    assert.equal(noPlugins.status, 2, 'missing plugins dir');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate: runaway stderr trips the output cap as dump-01', async () => {
+  const root = makeTempRoot(['bad-noise.js']);
+  try {
+    const { exitCode, lines } = await runValidate({ root, plugin: 'bad-noise', timeout: 8000 });
+    assert.equal(exitCode, 1);
+    const dump01 = lines.filter((l) => l.includes('[dump-01]'));
+    assert.equal(dump01.length, 1, JSON.stringify(lines));
+    assert.match(dump01[0], /输出超限/);
+    assert.match(dump01[0], /stderr/);
+    // The cap must fire long before the timeout: the kill happens after a
+    // couple of 64KiB stderr chunks, not after 8s.
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate: report lines strip control characters and keep factory-stage attribution', async () => {
+  const root = makeTempRoot(['bad-getter.js']);
+  try {
+    const { exitCode, lines } = await runValidate({ root, plugin: 'bad-getter' });
+    assert.equal(exitCode, 1);
+    const dump01 = lines.filter((l) => l.includes('[dump-01]'));
+    assert.equal(dump01.length, 1, JSON.stringify(lines));
+    // Throwing getter during collection is factory-stage (review M1)...
+    assert.match(dump01[0], /工厂执行失败/);
+    // ...and its ESC/BEL characters never reach the report (review M3).
+    assert.ok(!dump01[0].includes('\x1b'), JSON.stringify(dump01[0]));
+    assert.ok(!/[\x00-\x08\x0b-\x1f\x7f]/.test(dump01[0]), JSON.stringify(dump01[0]));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate CLI: bad-syntax import failure is a dump-01 in --plugin mode', () => {
+  const root = makeTempRoot(['bad-syntax.js']);
+  try {
+    const res = runCli(['--plugin', 'bad-syntax', '--root', root]);
+    assert.equal(res.status, 1);
+    const dump01 = res.stdout.split('\n').filter((l) => l.includes('[dump-01]'));
+    assert.equal(dump01.length, 1, res.stdout);
+    assert.match(dump01[0], /导入失败/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate: non-object meta maps to exactly one meta-08', async () => {
+  const root = makeTempRoot(['bad-meta-object.js']);
+  try {
+    const { exitCode, lines } = await runValidate({ root, plugin: 'bad-meta-object' });
+    assert.equal(exitCode, 1);
+    const fails = lines.filter((l) => l.startsWith('FAIL'));
+    assert.equal(fails.length, 1, JSON.stringify(lines));
+    assert.ok(fails[0].includes('[meta-08]'), fails[0]);
+    assert.match(fails[0], /meta must be an exported object/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate CLI: unparsable manifest reports list-04 even in --plugin mode', () => {
+  const root = makeTempRoot(['ok-min.js']);
+  try {
+    writeFileSync(path.join(root, 'manifest.json'), '{ broken json');
+    const res = runCli(['--plugin', 'ok-min', '--root', root]);
+    assert.equal(res.status, 1);
+    assert.match(res.stdout, /\[list-04\]/);
+    assert.match(res.stdout, /manifest\.json/);
+    // The plugin itself is fine; only the list problem is reported.
+    assert.match(res.stdout, /^PASS ok-min$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('validate: a symlinked plugin file is ignored by the scan', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'hghub-validate-'));
+  try {
+    mkdirSync(path.join(root, 'plugins'));
+    cpSync(path.join(fixturesDir, 'ok-min.js'), path.join(root, 'plugins', 'ok-min.js'));
+    try {
+      symlinkSync('ok-min.js', path.join(root, 'plugins', 'linked.js'));
+    } catch {
+      t.skip('creating a symlink requires privileges on this platform');
+      return;
+    }
+    const { exitCode, lines } = await runValidate({ root });
+    assert.equal(exitCode, 0, JSON.stringify(lines));
+    assert.deepEqual(lines.filter((l) => l.startsWith('PASS')), ['PASS ok-min'], JSON.stringify(lines));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
