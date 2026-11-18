@@ -1,25 +1,32 @@
 export const meta = {
-  id: '4kav',
-  name: '4k-av',
-  version: '1.0.1',
+  id: '4k-av',
+  name: '4K-AV',
+  version: '1.1.2',
   protocol: 1,
-  description: '4kmp 影视源：首页、分类、搜索、详情与直链播放。',
+  description: '4K-AV 影视源：首页、分类、搜索、详情与直链播放。',
   author: 'community',
   kind: 'source',
-  linkDomains: ['4kmp.com', 'www.4kmp.com'],
+  linkDomains: ['4k-av.com', 'www.4k-av.com'],
   defaultHeaders: {
-    Referer: 'https://4kmp.com/',
+    Referer: 'https://4k-av.com/',
+    Origin: 'https://4k-av.com',
+    Accept: '*/*',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
     'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1',
   },
   timeouts: { read: 20, playback: 30 },
 };
 
-const SITE = 'https://4kmp.com';
+const SITE = 'https://4k-av.com';
 const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1';
+const LANGUAGE = 'zh-CN,zh;q=0.9,en;q=0.8';
+
+// 根据当前页面分类及导航调整的标签定义
 const TABS = [
   { id: 'home', label: '首页', path: '' },
-  { id: 'movie', label: '电影', path: '/movie', type: 'movie' },
   { id: 'tv', label: '电视剧', path: '/tv', type: 'series' },
+  { id: 'movie', label: '电影', path: '/movie', type: 'movie' },
+  { id: 'av', label: 'AV', path: '/av', type: 'movie' },
 ];
 
 export default function (hg) {
@@ -29,8 +36,24 @@ export default function (hg) {
     return SITE;
   }
 
-  function headers() {
-    return { 'User-Agent': UA, Referer: origin() + '/' };
+  function pageHeaders(referer) {
+    return {
+      'User-Agent': UA,
+      Referer: referer || origin() + '/',
+      Origin: origin(),
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': LANGUAGE,
+    };
+  }
+
+  function mediaHeaders(referer) {
+    return {
+      'User-Agent': UA,
+      Referer: referer || origin() + '/',
+      Origin: origin(),
+      Accept: '*/*',
+      'Accept-Language': LANGUAGE,
+    };
   }
 
   function fail(code, message, extra) {
@@ -40,7 +63,7 @@ export default function (hg) {
   async function fetchHtml(url, ctx) {
     const res = await hg.http.fetch({
       url,
-      headers: headers(),
+      headers: pageHeaders(url),
       responseType: 'text',
       timeoutMs: 15000,
       retry: 1,
@@ -53,7 +76,8 @@ export default function (hg) {
 
   function absUrl(href) {
     if (!href) return '';
-    if (/^https?:\/\//i.test(href)) return href.replace('www.', '');
+    // 保留站点返回的完整主机名，避免播放域名被改写后触发防盗链。
+    if (/^https?:\/\//i.test(href)) return href;
     if (href.startsWith('//')) return 'https:' + href;
     const o = origin();
     return href.startsWith('/') ? o + href : o + '/' + href;
@@ -68,28 +92,29 @@ export default function (hg) {
     }
   }
 
+  // 解析当前页面的视频卡片列表
   function parseCards(html, typeHint) {
     const doc = hg.html.parse(html);
     const items = [];
-    const nodes = doc.select('#MainContent_newestlist .virow .NTMitem');
+    // 匹配页面中的视频列表项
+    const nodes = doc.select('.virow .NTMitem, .NTMitem');
     for (let i = 0; i < nodes.length; i++) {
       const el = nodes[i];
-      const a = el.first('.title a');
+      const a = el.first('a');
       const href = a && a.attr('href');
-      const h2 = el.first('.title h2');
-      const title = h2 ? h2.text() : (a ? a.text() : '');
+      const titleEl = el.first('.title h2') || el.first('.title') || el.first('h2') || el.first('h3') || a;
+      const title = titleEl ? titleEl.text() : '';
       if (!href || !title) continue;
-      const img = el.first('.poster img');
+      
+      const img = el.first('img');
       const cover = img && (img.attr('src') || img.attr('data-src'));
-      const noteEl = el.first('label[title=分辨率]');
-      const note = noteEl ? noteEl.text().split('/')[0].trim() : '';
+      
       const item = {
         id: mediaIdFromHref(href),
         title: title.trim(),
         type: typeHint || 'movie',
       };
       if (cover) item.cover = absUrl(cover);
-      if (note) item.badge = note.slice(0, 8);
       items.push(item);
     }
     return items;
@@ -97,10 +122,11 @@ export default function (hg) {
 
   function parseLastPage(html) {
     const doc = hg.html.parse(html);
-    const nav = doc.first('#MainContent_header_nav .page-number');
+    const nav = doc.first('.page-number') || doc.first('a[href*="page-"]');
     if (!nav) return 1;
-    const parts = nav.text().split('/');
-    const n = parseInt(parts[1], 10);
+    const text = nav.text();
+    const parts = text.split('/');
+    const n = parseInt(parts[parts.length - 1], 10);
     return Number.isFinite(n) && n > 0 ? n : 1;
   }
 
@@ -166,7 +192,7 @@ export default function (hg) {
       async getSections(params, ctx) {
         const latest = await listByTab(TABS[0], '1', ctx);
         return { items: [
-            { id: 'latest', title: '最新', layout: 'grid', items: latest.items },
+            { id: 'latest', title: '最新视频', layout: 'grid', items: latest.items },
           ], next: null };
       },
     },
@@ -187,7 +213,7 @@ export default function (hg) {
       async search(params, ctx) {
         const q = params && params.query ? String(params.query).trim() : '';
         if (!q) return { items: [], next: null };
-        const html = await fetchHtml(origin() + '/s?q=' + encodeURIComponent(q), ctx);
+        const html = await fetchHtml(origin() + '/s?u=' + encodeURIComponent(q), ctx);
         return { items: parseCards(html), next: null };
       },
     },
@@ -199,23 +225,26 @@ export default function (hg) {
         const url = absUrl(id);
         const html = await fetchHtml(url, ctx);
         const doc = hg.html.parse(html);
-        const titleEl = doc.first('h1') || doc.first('.title h2') || doc.first('title');
+        
+        const titleEl = doc.first('h1') || doc.first('h2') || doc.first('title');
         const title = titleEl ? titleEl.text().trim() : String(id);
-        const coverEl = doc.first('.poster img') || doc.first('#MainContent_videowindow video');
+        
+        const coverEl = doc.first('.poster img') || doc.first('video');
         const cover = coverEl && (coverEl.attr('poster') || coverEl.attr('src'));
-        const descEl = doc.first('.videodesc') || doc.first('.intro') || doc.first('.content');
-        const playlist = doc.select('#rtlist li');
+        
+        const descEl = doc.first('.videodesc') || doc.first('.intro');
+        
+        // 尝试解析选集/剧集列表
+        const playlist = doc.select('#rtlist li, .playlist li');
         const episodes = [];
         if (playlist.length) {
           for (let i = 0; i < playlist.length; i++) {
             const li = playlist[i];
+            const a = li.first('a') || li;
             const span = li.first('span');
-            const img = li.first('img');
-            const src = img && img.attr('src');
-            const epUrl = src ? absUrl(src.replace('screenshot.jpg', '')) : url;
-            const label = span ? span.text().trim() : String(i + 1);
+            const label = span ? span.text().trim() : (a ? a.text().trim() : String(i + 1));
             episodes.push({
-              id: mediaIdFromHref(epUrl) || String(i + 1),
+              id: mediaIdFromHref(a.attr('href') || url),
               index: i + 1,
               episodeNumber: i + 1,
               label: label,
@@ -224,6 +253,7 @@ export default function (hg) {
         } else {
           episodes.push({ id: mediaIdFromHref(url), index: 1, episodeNumber: 1, label: '播放' });
         }
+
         const detail = {
           id: mediaIdFromHref(id),
           title,
@@ -244,16 +274,19 @@ export default function (hg) {
         const url = absUrl(episodeId);
         const html = await fetchHtml(url, ctx);
         const doc = hg.html.parse(html);
-        const source = doc.first('#MainContent_videowindow video source') || doc.first('video source') || doc.first('video');
-        const playUrl = source && (source.attr('src') || source.attr('data-src'));
+        
+        const source = doc.first('video source') || doc.first('video') || doc.first('iframe');
+        const playUrl = source && (source.attr('src') || source.attr('data-src') || source.attr('href'));
         if (!playUrl) fail('UPSTREAM_CHANGED', '未解析到播放地址');
+        
         const href = absUrl(playUrl);
         return {
           streams: [{
             url: href,
             kind: 'media',
             format: guessFormat(href),
-            headers: headers(),
+            // 播放列表和分片沿用详情页来源，满足上游防盗链校验。
+            headers: mediaHeaders(url),
           }],
         };
       },
@@ -263,7 +296,7 @@ export default function (hg) {
         if (!raw) return null;
         try {
           const u = new URL(raw);
-          if (!/4kmp\.com$/i.test(u.hostname)) return null;
+          if (!/4k-av\.com$/i.test(u.hostname)) return null;
           if (u.pathname === '/' || u.pathname === '') return null;
           return { mediaId: u.pathname.replace(/\/$/, '') };
         } catch (_) {
